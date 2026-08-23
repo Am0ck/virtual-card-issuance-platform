@@ -208,4 +208,43 @@ class ApiErrorContractIntegrationTest extends AbstractPostgreSQLIntegrationTest 
 
         assertThat(result.getResponse().getHeader("X-Request-Id")).isNotBlank();
     }
+
+    @Nested
+    class RoutingAndFrameworkErrors {
+
+        private void assertClientError(ResultActions actions, int status, String code) throws Exception {
+            assertProblem(actions, status, code);
+        }
+
+        @Test
+        void unknownEndpointReturns404Not500() throws Exception {
+            assertClientError(mockMvc.perform(get("/api/v1/nope")),
+                    404, "INVALID_REQUEST");
+        }
+
+        @Test
+        void missingPathSegmentReturns400Not500() throws Exception {
+            // adversarial regression: previously fell into generic 500 handling.
+            // The empty segment binds {cardId} to "" which fails UUID conversion,
+            // so a malformed-request 400 is the correct client-error contract.
+            assertClientError(mockMvc.perform(get("/api/v1/cards//transactions")),
+                    400, "INVALID_REQUEST");
+        }
+
+        @Test
+        void unsupportedMethodReturns405() throws Exception {
+            assertClientError(mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                            .delete("/api/v1/cards/" + UUID.randomUUID())),
+                    405, "METHOD_NOT_ALLOWED");
+        }
+
+        @Test
+        void unsupportedContentTypeOnPostReturns415() throws Exception {
+            assertClientError(mockMvc.perform(post("/api/v1/cards")
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.TEXT_PLAIN)
+                            .content("plain text")),
+                    415, "UNSUPPORTED_MEDIA_TYPE");
+        }
+    }
 }

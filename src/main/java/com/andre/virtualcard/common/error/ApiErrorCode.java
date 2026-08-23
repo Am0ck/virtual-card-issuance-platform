@@ -7,6 +7,8 @@ public enum ApiErrorCode {
     CARD_CLOSED("Card closed"),
     INSUFFICIENT_FUNDS("Insufficient funds"),
     IDEMPOTENCY_CONFLICT("Idempotency conflict"),
+    METHOD_NOT_ALLOWED("Method not allowed"),
+    UNSUPPORTED_MEDIA_TYPE("Unsupported media type"),
     INTERNAL_ERROR("Internal error");
 
     private final String title;

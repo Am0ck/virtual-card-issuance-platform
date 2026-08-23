@@ -2,6 +2,9 @@ package com.andre.virtualcard.transaction;
 
 import com.andre.virtualcard.card.Card;
 import com.andre.virtualcard.card.CardRepository;
+import com.andre.virtualcard.card.CardService;
+import com.andre.virtualcard.card.CreateCardRequest;
+import com.andre.virtualcard.idempotency.IdempotencyConflictException;
 import com.andre.virtualcard.idempotency.IdempotencyOperation;
 import com.andre.virtualcard.idempotency.IdempotencyRepository;
 import com.andre.virtualcard.idempotency.IdempotencyRequest;
@@ -42,6 +45,9 @@ class CardTransactionConcurrencyIntegrationTest extends AbstractPostgreSQLIntegr
 
     @Autowired
     private CardTransactionService cardTransactionService;
+
+    @Autowired
+    private CardService cardService;
 
     @Autowired
     private IdempotencyRepository idempotencyRepository;
@@ -132,6 +138,177 @@ class CardTransactionConcurrencyIntegrationTest extends AbstractPostgreSQLIntegr
                 .toList();
         assertThat(topUpRows).hasSize(workers);
         assertThat(topUpRows).allSatisfy(t -> assertThat(t.getStatus()).isEqualTo(TransactionStatus.SUCCESSFUL));
+    }
+
+    @Test
+    void concurrentSameKeyCardCreationCollapsesIntoOneCard() throws Exception {
+        int workers = 20;
+        String sharedKey = UUID.randomUUID().toString();
+        long cardsBefore = cardRepository.count();
+
+        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        CountDownLatch ready = new CountDownLatch(workers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<com.andre.virtualcard.card.CardResponse>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < workers; i++) {
+                final int workerIndex = i;
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("start gate timed out");
+                    }
+                    // alternate canonical-equivalent forms: 20 and 20.00 share one fingerprint
+                    BigDecimal initialBalance = workerIndex % 2 == 0
+                            ? new BigDecimal("20")
+                            : new BigDecimal("20.00");
+                    return cardService.create(sharedKey,
+                            new CreateCardRequest("Jane Doe", initialBalance));
+                }));
+            }
+            assertThat(ready.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            List<com.andre.virtualcard.card.CardResponse> responses = new ArrayList<>(workers);
+            for (Future<com.andre.virtualcard.card.CardResponse> future : futures) {
+                responses.add(future.get(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            }
+
+            var distinctCardIds = responses.stream()
+                    .map(com.andre.virtualcard.card.CardResponse::id)
+                    .distinct()
+                    .toList();
+            assertThat(distinctCardIds).hasSize(1); // every caller got the SAME card
+            UUID cardId = distinctCardIds.get(0);
+
+            assertThat(cardRepository.count()).isEqualTo(cardsBefore + 1);
+            assertThat(balanceOf(cardId)).isEqualByComparingTo("20.00");
+
+            var fundingRows = cardTransactionRepository
+                    .findByCardIdOrderByCreatedAtDescIdDesc(cardId, Pageable.unpaged())
+                    .getContent()
+                    .stream()
+                    .filter(t -> t.getType() == TransactionType.INITIAL_FUNDING)
+                    .toList();
+            assertThat(fundingRows).hasSize(1);
+
+            // exactly one durable idempotency result exists for the NULL-resource scope
+            List<IdempotencyRequest> scopeRows = idempotencyRepository.findAll().stream()
+                    .filter(r -> r.getOperationType() == IdempotencyOperation.CREATE_CARD)
+                    .filter(r -> sharedKey.equals(r.getIdempotencyKey()))
+                    .toList();
+            assertThat(scopeRows).hasSize(1);
+            assertThat(scopeRows.get(0).getResultCardId()).isEqualTo(cardId);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void concurrentSameKeyCreationWithDifferentPayloadsYieldsOneCardAndOneConflict() throws Exception {
+        String sharedKey = UUID.randomUUID().toString();
+        long cardsBefore = cardRepository.count();
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<com.andre.virtualcard.card.CardResponse> winner = executor.submit(() -> {
+                ready.countDown();
+                if (!start.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("start gate timed out");
+                }
+                return cardService.create(sharedKey,
+                        new CreateCardRequest("Jane Doe", new BigDecimal("20")));
+            });
+            Future<com.andre.virtualcard.card.CardResponse> conflicting = executor.submit(() -> {
+                ready.countDown();
+                if (!start.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("start gate timed out");
+                }
+                return cardService.create(sharedKey,
+                        new CreateCardRequest("Janet Doe", new BigDecimal("30")));
+            });
+
+            assertThat(ready.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            Exception conflictFailure = null;
+            com.andre.virtualcard.card.CardResponse successResponse = null;
+            try {
+                successResponse = winner.get(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException e) {
+                conflictFailure = (Exception) e.getCause();
+            }
+            try {
+                successResponse = conflicting.get(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException e) {
+                conflictFailure = (Exception) e.getCause();
+            }
+
+            // whichever payload loses must receive a fingerprint conflict, not silence
+            assertThat(conflictFailure).isInstanceOf(IdempotencyConflictException.class);
+            assertThat(successResponse).isNotNull();
+            assertThat(cardRepository.count()).isEqualTo(cardsBefore + 1); // only one card ever created
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void concurrentTopUpAndSpendSerializeWithoutLostUpdateOrNegativeBalance() throws Exception {
+        UUID cardId = createCard("50");
+        int workers = 2;
+
+        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        CountDownLatch ready = new CountDownLatch(workers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<CardMutationResult>> futures = new ArrayList<>();
+        try {
+            // both operations are valid in either serialization order
+            futures.add(executor.submit(() -> {
+                ready.countDown();
+                if (!start.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("start gate timed out");
+                }
+                return cardTransactionService.topUp(
+                        cardId, UUID.randomUUID().toString(), new AmountRequest(new BigDecimal("10")));
+            }));
+            futures.add(executor.submit(() -> {
+                ready.countDown();
+                if (!start.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("start gate timed out");
+                }
+                return cardTransactionService.spend(
+                        cardId, UUID.randomUUID().toString(), new AmountRequest(new BigDecimal("45")));
+            }));
+
+            assertThat(ready.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            List<CardMutationResult> results = new ArrayList<>(workers);
+            for (Future<CardMutationResult> future : futures) {
+                results.add(future.get(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            }
+
+            // both operations succeed under either serialization; no lost update
+            assertThat(results).allSatisfy(r -> assertThat(r).isInstanceOf(CardMutationResult.Successful.class));
+
+            // both serial orders end identically: 50 +10 -45 = 15.00 regardless of order.
+            // Any other value would prove a lost update.
+            BigDecimal finalBalance = balanceOf(cardId);
+            assertThat(finalBalance).isEqualByComparingTo("15.00");
+
+            var content = cardTransactionRepository
+                    .findByCardIdOrderByCreatedAtDescIdDesc(cardId, Pageable.unpaged())
+                    .getContent();
+            assertThat(content).hasSize(3); // initial funding + one TOP_UP + one SPEND
+            assertThat(content.stream().filter(t -> t.getType() == TransactionType.TOP_UP)).hasSize(1);
+            assertThat(content.stream().filter(t -> t.getType() == TransactionType.SPEND)).hasSize(1);
+            assertThat(content).allSatisfy(t -> assertThat(t.getStatus()).isEqualTo(TransactionStatus.SUCCESSFUL));
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     private List<CardMutationResult> runConcurrently(

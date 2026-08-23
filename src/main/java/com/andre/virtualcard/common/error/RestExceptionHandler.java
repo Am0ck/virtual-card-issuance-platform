@@ -7,11 +7,14 @@ import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
 public class RestExceptionHandler {
@@ -65,6 +68,26 @@ public class RestExceptionHandler {
             case CARD_CLOSED ->
                     problem(HttpStatus.CONFLICT, ApiErrorCode.CARD_CLOSED, e.getMessage(), request);
         };
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ProblemDetail handleNoResource(NoResourceFoundException e, HttpServletRequest request) {
+        return problem(HttpStatus.NOT_FOUND, ApiErrorCode.INVALID_REQUEST,
+                "No API endpoint matches this request path", request);
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ProblemDetail handleMethodNotSupported(HttpRequestMethodNotSupportedException e,
+                                                  HttpServletRequest request) {
+        return problem(HttpStatus.METHOD_NOT_ALLOWED, ApiErrorCode.METHOD_NOT_ALLOWED,
+                "HTTP method is not supported for this endpoint", request);
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ProblemDetail handleMediaTypeNotSupported(HttpMediaTypeNotSupportedException e,
+                                                     HttpServletRequest request) {
+        return problem(HttpStatus.UNSUPPORTED_MEDIA_TYPE, ApiErrorCode.UNSUPPORTED_MEDIA_TYPE,
+                "Request Content-Type is not supported", request);
     }
 
     @ExceptionHandler(IllegalStateException.class)

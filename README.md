@@ -137,8 +137,10 @@ code and correlation id:
 | Status | Code |
 |---|---|
 | 400 | `INVALID_REQUEST` — malformed input/validation/UUID/key |
-| 404 | `CARD_NOT_FOUND` |
+| 404 | `CARD_NOT_FOUND`, or no API endpoint matches the path (`INVALID_REQUEST`) |
+| 405 | `METHOD_NOT_ALLOWED` |
 | 409 | `CARD_BLOCKED` / `CARD_CLOSED` / `IDEMPOTENCY_CONFLICT` |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` |
 | 422 | `INSUFFICIENT_FUNDS` |
 | 500 | `INTERNAL_ERROR` — sanitized, no internals exposed |
 

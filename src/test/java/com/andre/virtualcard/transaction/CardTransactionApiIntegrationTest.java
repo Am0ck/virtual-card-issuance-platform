@@ -351,6 +351,23 @@ class CardTransactionApiIntegrationTest extends AbstractPostgreSQLIntegrationTes
 
             mockMvc.perform(get("/api/v1/cards/" + cardId + "/transactions?size=101"))
                     .andExpect(status().isBadRequest());
+
+            // adversarial: malformed non-numeric paging values must not produce 500
+            mockMvc.perform(get("/api/v1/cards/" + cardId + "/transactions?page=abc"))
+                    .andExpect(status().isBadRequest());
+
+            mockMvc.perform(get("/api/v1/cards/" + cardId + "/transactions?size=xyz"))
+                    .andExpect(status().isBadRequest());
+        }
+
+        @Test
+        void acceptsBoundaryPageSizeOf100() throws Exception {
+            UUID cardId = createCard("10");
+
+            mockMvc.perform(get("/api/v1/cards/" + cardId + "/transactions?size=100"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.size").value(100))
+                    .andExpect(jsonPath("$.hasNext").value(false));
         }
     }
 
