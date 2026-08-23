@@ -18,7 +18,7 @@ public class IdempotencyService {
     private static final int MAX_KEY_LENGTH = 128;
 
     private static final String CLAIM_SQL = """
-            INSERT INTO idempotency_request (
+            INSERT INTO idempotency_request AS existing (
                 id, operation_type, resource_id, idempotency_key,
                 request_fingerprint, created_at, expires_at,
                 result_card_id, result_transaction_id
@@ -27,7 +27,14 @@ public class IdempotencyService {
                 ?, clock_timestamp(), clock_timestamp() + make_interval(secs => ?),
                 NULL, NULL
             )
-            ON CONFLICT ON CONSTRAINT uq_idempotency_scope DO NOTHING
+            ON CONFLICT ON CONSTRAINT uq_idempotency_scope
+            DO UPDATE SET
+                request_fingerprint = EXCLUDED.request_fingerprint,
+                created_at = clock_timestamp(),
+                expires_at = clock_timestamp() + make_interval(secs => ?),
+                result_card_id = NULL,
+                result_transaction_id = NULL
+            WHERE existing.expires_at <= clock_timestamp()
             RETURNING id
             """;
 
@@ -52,19 +59,22 @@ public class IdempotencyService {
 
     public IdempotencyClaim claim(IdempotencyOperation operation, UUID resourceId, String key, String fingerprint) {
         validateKey(key);
-        UUID claimId = UUID.randomUUID();
-        List<UUID> inserted = jdbcTemplate.query(
+        UUID candidateClaimId = UUID.randomUUID();
+        // The returned id is authoritative: for a brand-new scope it is the candidate id,
+        // for a reclaimed expired scope it is the existing row's surrogate id.
+        List<UUID> returned = jdbcTemplate.query(
                 CLAIM_SQL,
                 (rs, rowNum) -> rs.getObject("id", UUID.class),
-                claimId,
+                candidateClaimId,
                 operation.name(),
                 resourceId,
                 key,
                 fingerprint,
+                retentionSeconds,
                 retentionSeconds
         );
-        if (!inserted.isEmpty()) {
-            return new Claimed(claimId);
+        if (!returned.isEmpty()) {
+            return new Claimed(returned.get(0));
         }
         return replayOrConflict(operation, resourceId, key, fingerprint);
     }

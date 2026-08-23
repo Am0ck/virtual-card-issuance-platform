@@ -2,11 +2,15 @@ package com.andre.virtualcard.transaction;
 
 import com.andre.virtualcard.card.Card;
 import com.andre.virtualcard.card.CardRepository;
+import com.andre.virtualcard.idempotency.IdempotencyOperation;
+import com.andre.virtualcard.idempotency.IdempotencyRepository;
+import com.andre.virtualcard.idempotency.IdempotencyRequest;
 import com.andre.virtualcard.support.AbstractPostgreSQLIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
@@ -38,6 +42,12 @@ class CardTransactionConcurrencyIntegrationTest extends AbstractPostgreSQLIntegr
 
     @Autowired
     private CardTransactionService cardTransactionService;
+
+    @Autowired
+    private IdempotencyRepository idempotencyRepository;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @Test
     void twoCompetingSpendsSerializeAndCannotOverspend() throws Exception {
@@ -200,6 +210,75 @@ class CardTransactionConcurrencyIntegrationTest extends AbstractPostgreSQLIntegr
             assertThat(balanceOf(cardId)).isEqualByComparingTo("75.00");
             assertThat(spendRows(cardId)).hasSize(1);
             assertThat(spendRows(cardId).get(0).getStatus()).isEqualTo(TransactionStatus.SUCCESSFUL);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void concurrentExpiredKeyReclamationCollapsesIntoOneNewOperation() throws Exception {
+        UUID cardId = createCard("100");
+        String key = UUID.randomUUID().toString();
+
+        // original logical operation
+        CardMutationResult original =
+                cardTransactionService.spend(cardId, key, new AmountRequest(new BigDecimal("25")));
+        assertThat(original).isInstanceOf(CardMutationResult.Successful.class);
+        UUID originalTransactionId = ((CardMutationResult.Successful) original).transaction().id();
+        assertThat(balanceOf(cardId)).isEqualByComparingTo("75.00");
+
+        // force the idempotency row safely into the past
+        IdempotencyRequest row = idempotencyRepository
+                .findByOperationTypeAndResourceIdAndIdempotencyKey(
+                        IdempotencyOperation.SPEND, cardId, key)
+                .orElseThrow();
+        jdbcTemplate.update(
+                "UPDATE idempotency_request "
+                        + "SET created_at = clock_timestamp() - interval '2 hours', "
+                        + "expires_at = clock_timestamp() - interval '1 hour' "
+                        + "WHERE id = ?",
+                row.getId()
+        );
+
+        int workers = 20;
+        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        CountDownLatch ready = new CountDownLatch(workers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<CardMutationResult>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < workers; i++) {
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("start gate timed out");
+                    }
+                    return cardTransactionService.spend(
+                            cardId, key, new AmountRequest(new BigDecimal("25")));
+                }));
+            }
+            assertThat(ready.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            List<CardMutationResult> results = new ArrayList<>(workers);
+            for (Future<CardMutationResult> future : futures) {
+                results.add(future.get(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            }
+
+            // exactly one reclaimed logical operation, replayed to every other caller
+            assertThat(results).allSatisfy(r -> assertThat(r).isInstanceOf(CardMutationResult.Successful.class));
+            var reclaimedTransactionIds = results.stream()
+                    .map(CardMutationResult.Successful.class::cast)
+                    .map(s -> s.transaction().id())
+                    .distinct()
+                    .toList();
+            assertThat(reclaimedTransactionIds).hasSize(1);
+            assertThat(reclaimedTransactionIds.get(0)).isNotEqualTo(originalTransactionId);
+
+            assertThat(balanceOf(cardId)).isEqualByComparingTo("50.00");
+            List<CardTransaction> spends = spendRows(cardId);
+            assertThat(spends).hasSize(2); // original pre-expiry op + exactly one reclaimed op
+            assertThat(spends.stream().map(CardTransaction::getId))
+                    .containsExactlyInAnyOrder(originalTransactionId, reclaimedTransactionIds.get(0));
         } finally {
             executor.shutdownNow();
         }
