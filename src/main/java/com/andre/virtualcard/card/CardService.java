@@ -1,5 +1,6 @@
 package com.andre.virtualcard.card;
 
+import com.andre.virtualcard.common.audit.CardOperationAuditEvent;
 import com.andre.virtualcard.common.observability.OperationObservability;
 import com.andre.virtualcard.idempotency.IdempotencyClaim;
 import com.andre.virtualcard.idempotency.IdempotencyConflictException;
@@ -12,10 +13,10 @@ import com.andre.virtualcard.transaction.CardTransaction;
 import com.andre.virtualcard.transaction.CardTransactionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.UUID;
@@ -29,6 +30,7 @@ public class CardService {
     private final CardTransactionRepository cardTransactionRepository;
     private final IdempotencyService idempotencyService;
     private final OperationObservability observability;
+    private final ApplicationEventPublisher eventPublisher;
     private final Clock clock;
 
     public CardService(
@@ -36,12 +38,14 @@ public class CardService {
             CardTransactionRepository cardTransactionRepository,
             IdempotencyService idempotencyService,
             OperationObservability observability,
+            ApplicationEventPublisher eventPublisher,
             Clock clock
     ) {
         this.cardRepository = cardRepository;
         this.cardTransactionRepository = cardTransactionRepository;
         this.idempotencyService = idempotencyService;
         this.observability = observability;
+        this.eventPublisher = eventPublisher;
         this.clock = clock;
     }
 
@@ -89,6 +93,9 @@ public class CardService {
             }
 
             idempotencyService.complete(claimId, cardId, null);
+
+            eventPublisher.publishEvent(new CardOperationAuditEvent(
+                    "CREATE_CARD", cardId, initialFundingId, null, "SUCCESSFUL", null));
 
             recordSuccess(startNano, replay, candidate.getId(), initialFundingId, idempotencyKey);
             return CardResponse.from(candidate);

@@ -20,7 +20,7 @@ class CardTest {
     private static final Instant CREATED_AT = Instant.parse("2026-08-23T10:00:00Z");
 
     private static Card activeCard(String initialBalance) {
-        return Card.create(CARD_ID, "Andre Cassar Mockridge", new BigDecimal(initialBalance), CREATED_AT);
+        return Card.create(CARD_ID, "Jane Doe", new BigDecimal(initialBalance), CREATED_AT);
     }
 
     @Nested
@@ -29,10 +29,10 @@ class CardTest {
         @Test
         void createsActiveCardWithTrimmedNameAndGivenBalance() {
             Card card = Card.create(
-                    CARD_ID, "  Andre Cassar Mockridge  ", new BigDecimal("100.5"), CREATED_AT);
+                    CARD_ID, "  Jane Doe  ", new BigDecimal("100.5"), CREATED_AT);
 
             assertEquals(CARD_ID, card.getId());
-            assertEquals("Andre Cassar Mockridge", card.getCardholderName());
+            assertEquals("Jane Doe", card.getCardholderName());
             assertEquals(new BigDecimal("100.50"), card.getBalance());
             assertEquals(CardStatus.ACTIVE, card.getStatus());
             assertEquals(CREATED_AT, card.getCreatedAt());
@@ -88,17 +88,17 @@ class CardTest {
         @Test
         void rejectsNumericalDigitsIncludingNonAsciiDecimals() {
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "Andre123", BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(CARD_ID, "Jane123", BigDecimal.TEN, CREATED_AT));
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "Andre\u0662", BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(CARD_ID, "Jane\u0662", BigDecimal.TEN, CREATED_AT));
         }
 
         @Test
         void rejectsControlCharactersBeforeNormalization() {
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "Andre\nMockridge", BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(CARD_ID, "Jane\nDoe", BigDecimal.TEN, CREATED_AT));
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "Andre\tMockridge", BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(CARD_ID, "Jane\tDoe", BigDecimal.TEN, CREATED_AT));
         }
 
         @Test

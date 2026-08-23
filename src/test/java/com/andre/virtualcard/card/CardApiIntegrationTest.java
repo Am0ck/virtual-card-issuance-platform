@@ -51,11 +51,11 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
                             .header(KEY_HEADER, freshKey())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("""
-                                    {"cardholderName": "Andre Cassar Mockridge", "initialBalance": 0}
+                                    {"cardholderName": "Jane Doe", "initialBalance": 0}
                                     """))
                     .andExpect(status().isCreated())
                     .andExpect(jsonPath("$.id").isNotEmpty())
-                    .andExpect(jsonPath("$.cardholderName").value("Andre Cassar Mockridge"))
+                    .andExpect(jsonPath("$.cardholderName").value("Jane Doe"))
                     .andExpect(jsonPath("$.balance").value(0.00))
                     .andExpect(jsonPath("$.status").value("ACTIVE"))
                     .andExpect(jsonPath("$.createdAt").isNotEmpty())
@@ -213,7 +213,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
             String firstLocation = mockMvc.perform(post(CARDS_URL)
                             .header(KEY_HEADER, key)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 20}"))
+                            .content("{\"cardholderName\": \"Jane\", \"initialBalance\": 20}"))
                     .andExpect(status().isCreated())
                     .andReturn().getResponse().getHeader("Location");
             UUID originalCardId = extractCardId(firstLocation);
@@ -221,7 +221,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
             String replayLocation = mockMvc.perform(post(CARDS_URL)
                             .header(KEY_HEADER, key)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 20.00}"))
+                            .content("{\"cardholderName\": \"Jane\", \"initialBalance\": 20.00}"))
                     .andExpect(status().isCreated())
                     .andExpect(jsonPath("$.id").value(originalCardId.toString()))
                     .andExpect(jsonPath("$.balance").value(20.00))
@@ -246,19 +246,19 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
             mockMvc.perform(post(CARDS_URL)
                             .header(KEY_HEADER, key)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 20}"))
+                            .content("{\"cardholderName\": \"Jane\", \"initialBalance\": 20}"))
                     .andExpect(status().isCreated());
 
             mockMvc.perform(post(CARDS_URL)
                             .header(KEY_HEADER, key)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 30}"))
+                            .content("{\"cardholderName\": \"Jane\", \"initialBalance\": 30}"))
                     .andExpect(status().isConflict());
 
             mockMvc.perform(post(CARDS_URL)
                             .header(KEY_HEADER, key)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"cardholderName\": \"Andre Cassar\", \"initialBalance\": 20}"))
+                            .content("{\"cardholderName\": \"Janet Doe\", \"initialBalance\": 20}"))
                     .andExpect(status().isConflict());
 
             assertThat(cardRepository.count()).isEqualTo(cardsBefore + 1);
@@ -270,7 +270,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
 
             mockMvc.perform(post(CARDS_URL)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 10}"))
+                            .content("{\"cardholderName\": \"Jane\", \"initialBalance\": 10}"))
                     .andExpect(status().isBadRequest());
 
             assertThat(cardRepository.count()).isEqualTo(cardsBefore);
@@ -284,7 +284,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
                 mockMvc.perform(post(CARDS_URL)
                                 .header(KEY_HEADER, badKey)
                                 .contentType(MediaType.APPLICATION_JSON)
-                                .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 10}"))
+                                .content("{\"cardholderName\": \"Jane\", \"initialBalance\": 10}"))
                         .andExpect(status().isBadRequest());
             }
 

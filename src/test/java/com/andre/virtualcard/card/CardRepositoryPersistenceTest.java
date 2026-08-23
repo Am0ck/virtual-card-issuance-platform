@@ -26,7 +26,7 @@ class CardRepositoryPersistenceTest extends AbstractPostgreSQLIntegrationTest {
     void savesAndReadsBackACardThroughTheFlywayMigratedSchema() {
         UUID id = UUID.randomUUID();
         Instant createdAt = Instant.parse("2026-08-23T10:00:00Z");
-        Card card = Card.create(id, "Andre Cassar Mockridge", new BigDecimal("100.5"), createdAt);
+        Card card = Card.create(id, "Jane Doe", new BigDecimal("100.5"), createdAt);
 
         cardRepository.saveAndFlush(card);
         entityManager.clear();
@@ -34,7 +34,7 @@ class CardRepositoryPersistenceTest extends AbstractPostgreSQLIntegrationTest {
         Optional<Card> loaded = cardRepository.findById(id);
 
         assertTrue(loaded.isPresent());
-        assertEquals("Andre Cassar Mockridge", loaded.get().getCardholderName());
+        assertEquals("Jane Doe", loaded.get().getCardholderName());
         assertEquals(new BigDecimal("100.50"), loaded.get().getBalance());
         assertEquals(CardStatus.ACTIVE, loaded.get().getStatus());
         assertEquals(createdAt, loaded.get().getCreatedAt());

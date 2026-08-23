@@ -293,7 +293,7 @@ class CardTransactionConcurrencyIntegrationTest extends AbstractPostgreSQLIntegr
         String location = mockMvc.perform(post("/api/v1/cards")
                         .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"cardholderName\": \"Andre Cassar Mockridge\", \"initialBalance\": "
+                        .content("{\"cardholderName\": \"Jane Doe\", \"initialBalance\": "
                                 + initialBalance + "}"))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getHeader("Location");

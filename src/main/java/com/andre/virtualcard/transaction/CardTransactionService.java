@@ -5,6 +5,7 @@ import com.andre.virtualcard.card.CardNotFoundException;
 import com.andre.virtualcard.card.CardOperationResult;
 import com.andre.virtualcard.card.CardRepository;
 import com.andre.virtualcard.common.MonetaryAmounts;
+import com.andre.virtualcard.common.audit.CardOperationAuditEvent;
 import com.andre.virtualcard.common.observability.OperationObservability;
 import com.andre.virtualcard.idempotency.IdempotencyClaim;
 import com.andre.virtualcard.idempotency.IdempotencyClaim.Replayed;
@@ -18,6 +19,7 @@ import com.andre.virtualcard.transaction.CardMutationResult.Declined;
 import com.andre.virtualcard.transaction.CardMutationResult.Successful;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,6 +39,7 @@ public class CardTransactionService {
     private final CardTransactionRepository cardTransactionRepository;
     private final IdempotencyService idempotencyService;
     private final OperationObservability observability;
+    private final ApplicationEventPublisher eventPublisher;
     private final Clock clock;
 
     public CardTransactionService(
@@ -44,12 +47,14 @@ public class CardTransactionService {
             CardTransactionRepository cardTransactionRepository,
             IdempotencyService idempotencyService,
             OperationObservability observability,
+            ApplicationEventPublisher eventPublisher,
             Clock clock
     ) {
         this.cardRepository = cardRepository;
         this.cardTransactionRepository = cardTransactionRepository;
         this.idempotencyService = idempotencyService;
         this.observability = observability;
+        this.eventPublisher = eventPublisher;
         this.clock = clock;
     }
 
@@ -125,6 +130,15 @@ public class CardTransactionService {
             // enforces its foreign keys
             cardTransactionRepository.saveAndFlush(transaction);
             idempotencyService.complete(claimId, null, transactionId);
+
+            eventPublisher.publishEvent(new CardOperationAuditEvent(
+                    operation,
+                    cardId,
+                    transactionId,
+                    canonicalAmount,
+                    transaction.getStatus().name(),
+                    transaction.getDeclineReason() == null ? null : transaction.getDeclineReason().name()
+            ));
 
             CardMutationResult outcome;
             if (transaction.getStatus() == TransactionStatus.SUCCESSFUL) {

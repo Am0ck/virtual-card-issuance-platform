@@ -3,7 +3,8 @@ package com.andre.virtualcard.common.error;
 import com.andre.virtualcard.card.CardRepository;
 import com.andre.virtualcard.support.AbstractPostgreSQLIntegrationTest;
 import com.andre.virtualcard.transaction.CardTransactionRepository;
-import com.andre.virtualcard.transaction.TransactionType;import org.junit.jupiter.api.Nested;
+import com.andre.virtualcard.transaction.TransactionType;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -35,7 +36,7 @@ class ApiErrorContractIntegrationTest extends AbstractPostgreSQLIntegrationTest 
         String location = mockMvc.perform(post("/api/v1/cards")
                         .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"cardholderName\": \"Andre Cassar Mockridge\", \"initialBalance\": "
+                        .content("{\"cardholderName\": \"Jane Doe\", \"initialBalance\": "
                                 + initialBalance + "}"))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getHeader("Location");
@@ -67,7 +68,7 @@ class ApiErrorContractIntegrationTest extends AbstractPostgreSQLIntegrationTest 
         void missingIdempotencyKeyReturnsProblemDetail400() throws Exception {
             assertProblem(mockMvc.perform(post("/api/v1/cards")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 10}")),
+                            .content("{\"cardholderName\": \"Jane\", \"initialBalance\": 10}")),
                     400, "INVALID_REQUEST");
         }
 
@@ -201,7 +202,7 @@ class ApiErrorContractIntegrationTest extends AbstractPostgreSQLIntegrationTest 
         var result = mockMvc.perform(post("/api/v1/cards")
                         .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 10}"))
+                        .content("{\"cardholderName\": \"Jane\", \"initialBalance\": 10}"))
                 .andExpect(status().isCreated())
                 .andReturn();
 
