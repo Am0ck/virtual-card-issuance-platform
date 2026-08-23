@@ -3,6 +3,8 @@ package com.andre.virtualcard.transaction;
 import com.andre.virtualcard.card.Card;
 import com.andre.virtualcard.card.CardRepository;
 import com.andre.virtualcard.card.CardStatus;
+import com.andre.virtualcard.idempotency.IdempotencyOperation;
+import com.andre.virtualcard.idempotency.IdempotencyRepository;
 import com.andre.virtualcard.support.AbstractPostgreSQLIntegrationTest;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -38,8 +40,16 @@ class CardTransactionApiIntegrationTest extends AbstractPostgreSQLIntegrationTes
     @Autowired
     private CardTransactionRepository cardTransactionRepository;
 
+    @Autowired
+    private IdempotencyRepository idempotencyRepository;
+
+    private static String freshKey() {
+        return UUID.randomUUID().toString();
+    }
+
     private UUID createCard(String initialBalance) throws Exception {
         String location = mockMvc.perform(post("/api/v1/cards")
+                        .header("Idempotency-Key", freshKey())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"cardholderName\": \"Andre Cassar Mockridge\", \"initialBalance\": "
                                 + initialBalance + "}"))
@@ -68,13 +78,23 @@ class CardTransactionApiIntegrationTest extends AbstractPostgreSQLIntegrationTes
     }
 
     private ResultActions spend(UUID cardId, String amount) throws Exception {
+        return spendWithKey(cardId, amount, freshKey());
+    }
+
+    private ResultActions spendWithKey(UUID cardId, String amount, String key) throws Exception {
         return mockMvc.perform(post("/api/v1/cards/" + cardId + "/spends")
+                .header("Idempotency-Key", key)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"amount\": " + amount + "}"));
     }
 
     private ResultActions topUp(UUID cardId, String amount) throws Exception {
+        return topUpWithKey(cardId, amount, freshKey());
+    }
+
+    private ResultActions topUpWithKey(UUID cardId, String amount, String key) throws Exception {
         return mockMvc.perform(post("/api/v1/cards/" + cardId + "/top-ups")
+                .header("Idempotency-Key", key)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"amount\": " + amount + "}"));
     }
@@ -334,14 +354,143 @@ class CardTransactionApiIntegrationTest extends AbstractPostgreSQLIntegrationTes
         }
     }
 
+    @Nested
+    class Idempotency {
+
+        @Test
+        void replaysSuccessfulSpendWithSameTransactionIdWithoutSecondMutation() throws Exception {
+            UUID cardId = createCard("100");
+            String key = freshKey();
+
+            String firstTxnId = spendWithKey(cardId, "25", key)
+                    .andExpect(status().isCreated())
+                    .andReturn().getResponse().getContentAsString()
+                    .replaceAll(".*\"id\":\"([0-9a-f-]{36})\".*", "$1");
+
+            mockMvc.perform(post("/api/v1/cards/" + cardId + "/spends")
+                            .header("Idempotency-Key", key)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"amount\": 25.00}"))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.id").value(firstTxnId));
+
+            assertThat(balanceOf(cardId)).isEqualTo("75.00");
+            assertThat(spendRows(cardId)).hasSize(1);
+        }
+
+        @Test
+        void conflictsWhenSpendPayloadChangesUnderSameKey() throws Exception {
+            UUID cardId = createCard("100");
+            String key = freshKey();
+
+            spendWithKey(cardId, "25", key).andExpect(status().isCreated());
+
+            spendWithKey(cardId, "30", key).andExpect(status().isConflict());
+
+            assertThat(balanceOf(cardId)).isEqualTo("75.00");
+            assertThat(spendRows(cardId)).hasSize(1);
+        }
+
+        @Test
+        void replaysSuccessfulTopUpWithSameTransactionId() throws Exception {
+            UUID cardId = createCard("20");
+            String key = freshKey();
+
+            String firstTxnId = topUpWithKey(cardId, "10", key)
+                    .andExpect(status().isCreated())
+                    .andReturn().getResponse().getContentAsString()
+                    .replaceAll(".*\"id\":\"([0-9a-f-]{36})\".*", "$1");
+
+            topUpWithKey(cardId, "10.00", key)
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.id").value(firstTxnId));
+
+            assertThat(balanceOf(cardId)).isEqualTo("30.00");
+            List<CardTransaction> topUps = historyItemsInResponseOrder(cardId).stream()
+                    .filter(t -> t.getType() == TransactionType.TOP_UP)
+                    .toList();
+            assertThat(topUps).hasSize(1);
+        }
+
+        @Test
+        void replaysDurableDeclineEvenAfterBalanceChangesLater() throws Exception {
+            UUID cardId = createCard("20");
+            String declineKey = freshKey();
+
+            spendWithKey(cardId, "50", declineKey).andExpect(status().isUnprocessableEntity());
+
+            topUp(cardId, "100").andExpect(status().isCreated());
+            assertThat(balanceOf(cardId)).isEqualTo("120.00");
+
+            // same key replays the original durable decline; no re-evaluation against 120
+            spendWithKey(cardId, "50", declineKey).andExpect(status().isUnprocessableEntity());
+            assertThat(balanceOf(cardId)).isEqualTo("120.00");
+            assertThat(spendRows(cardId)).hasSize(1);
+            assertThat(spendRows(cardId).get(0).getStatus()).isEqualTo(TransactionStatus.DECLINED);
+
+            // a different key is an independent new operation and succeeds now
+            spend(cardId, "50").andExpect(status().isCreated());
+            assertThat(balanceOf(cardId)).isEqualTo("70.00");
+            assertThat(spendRows(cardId)).hasSize(2);
+        }
+
+        @Test
+        void sameKeyOnDifferentCardsIsIndependentScope() throws Exception {
+            UUID cardA = createCard("100");
+            UUID cardB = createCard("200");
+            String key = freshKey();
+
+            spendWithKey(cardA, "10", key).andExpect(status().isCreated());
+            spendWithKey(cardB, "10", key).andExpect(status().isCreated());
+
+            assertThat(balanceOf(cardA)).isEqualTo("90.00");
+            assertThat(balanceOf(cardB)).isEqualTo("190.00");
+        }
+
+        @Test
+        void sameKeyForSpendAndTopUpOnSameCardIsIndependentScope() throws Exception {
+            UUID cardId = createCard("100");
+            String key = freshKey();
+
+            spendWithKey(cardId, "30", key).andExpect(status().isCreated());
+            topUpWithKey(cardId, "30", key).andExpect(status().isCreated());
+
+            assertThat(balanceOf(cardId)).isEqualTo("100.00"); // -30 +30
+        }
+
+        @Test
+        void missingCardMutationDoesNotRetainTheClaim() throws Exception {
+            UUID missingCardId = UUID.randomUUID();
+            String key = freshKey();
+
+            spendWithKey(missingCardId, "5", key).andExpect(status().isNotFound());
+
+            assertThat(idempotencyRepository
+                    .findByOperationTypeAndResourceIdAndIdempotencyKey(
+                            IdempotencyOperation.SPEND,
+                            missingCardId,
+                            key
+                    ))
+                    .isEmpty();
+        }
+
+        private List<CardTransaction> spendRows(UUID cardId) throws Exception {
+            return historyItemsInResponseOrder(cardId).stream()
+                    .filter(t -> t.getType() == TransactionType.SPEND)
+                    .toList();
+        }
+    }
+
     private ResultActions spend(String rawCardId, String amount) throws Exception {
         return mockMvc.perform(post("/api/v1/cards/" + rawCardId + "/spends")
+                .header("Idempotency-Key", freshKey())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"amount\": " + amount + "}"));
     }
 
     private ResultActions topUp(String rawCardId, String amount) throws Exception {
         return mockMvc.perform(post("/api/v1/cards/" + rawCardId + "/top-ups")
+                .header("Idempotency-Key", freshKey())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"amount\": " + amount + "}"));
     }

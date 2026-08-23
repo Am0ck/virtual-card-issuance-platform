@@ -141,7 +141,9 @@ class CardTransactionConcurrencyIntegrationTest extends AbstractPostgreSQLIntegr
                     if (!start.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                         throw new IllegalStateException("start gate timed out");
                     }
-                    return call.invoke(cardTransactionService, cardId, requestSupplier.get());
+                    // distinct keys: each worker is an independent logical operation
+                    String key = UUID.randomUUID().toString();
+                    return call.invoke(cardTransactionService, cardId, key, requestSupplier.get());
                 }));
             }
 
@@ -158,13 +160,59 @@ class CardTransactionConcurrencyIntegrationTest extends AbstractPostgreSQLIntegr
         }
     }
 
+    @Test
+    void concurrentSameKeySpendsCollapseIntoOneOperation() throws Exception {
+        UUID cardId = createCard("100");
+        int workers = 20;
+        String sharedKey = UUID.randomUUID().toString();
+
+        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        CountDownLatch ready = new CountDownLatch(workers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<CardMutationResult>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < workers; i++) {
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("start gate timed out");
+                    }
+                    return cardTransactionService.spend(
+                            cardId, sharedKey, new AmountRequest(new BigDecimal("25")));
+                }));
+            }
+            assertThat(ready.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            List<CardMutationResult> results = new ArrayList<>(workers);
+            for (Future<CardMutationResult> future : futures) {
+                results.add(future.get(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            }
+
+            assertThat(results).allSatisfy(r -> assertThat(r).isInstanceOf(CardMutationResult.Successful.class));
+            var transactionIds = results.stream()
+                    .map(CardMutationResult.Successful.class::cast)
+                    .map(s -> s.transaction().id())
+                    .distinct()
+                    .toList();
+            assertThat(transactionIds).hasSize(1);
+
+            assertThat(balanceOf(cardId)).isEqualByComparingTo("75.00");
+            assertThat(spendRows(cardId)).hasSize(1);
+            assertThat(spendRows(cardId).get(0).getStatus()).isEqualTo(TransactionStatus.SUCCESSFUL);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
     @FunctionalInterface
     private interface MutationCall {
-        CardMutationResult invoke(CardTransactionService service, UUID cardId, AmountRequest request);
+        CardMutationResult invoke(CardTransactionService service, UUID cardId, String key, AmountRequest request);
     }
 
     private UUID createCard(String initialBalance) throws Exception {
         String location = mockMvc.perform(post("/api/v1/cards")
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"cardholderName\": \"Andre Cassar Mockridge\", \"initialBalance\": "
                                 + initialBalance + "}"))

@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -29,17 +30,19 @@ public class CardTransactionController {
     @PostMapping("/spends")
     public ResponseEntity<Object> spend(
             @PathVariable UUID cardId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody AmountRequest request
     ) {
-        return toHttpResponse(cardTransactionService.spend(cardId, request));
+        return toHttpResponse(cardTransactionService.spend(cardId, idempotencyKey, request));
     }
 
     @PostMapping("/top-ups")
     public ResponseEntity<Object> topUp(
             @PathVariable UUID cardId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody AmountRequest request
     ) {
-        return toHttpResponse(cardTransactionService.topUp(cardId, request));
+        return toHttpResponse(cardTransactionService.topUp(cardId, idempotencyKey, request));
     }
 
     @GetMapping("/transactions")

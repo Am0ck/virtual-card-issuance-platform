@@ -23,6 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
 
     private static final String CARDS_URL = "/api/v1/cards";
+    private static final String KEY_HEADER = "Idempotency-Key";
 
     @Autowired
     private MockMvc mockMvc;
@@ -32,6 +33,10 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
 
     @Autowired
     private CardTransactionRepository cardTransactionRepository;
+
+    private static String freshKey() {
+        return UUID.randomUUID().toString();
+    }
 
     private static UUID extractCardId(String location) {
         return UUID.fromString(location.substring(location.lastIndexOf('/') + 1));
@@ -43,6 +48,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
         @Test
         void createsActiveCardWithZeroBalanceAndNoInitialFunding() throws Exception {
             var result = mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, freshKey())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"cardholderName": "Andre Cassar Mockridge", "initialBalance": 0}
@@ -68,6 +74,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
         @Test
         void createsCardWithPositiveBalanceAndExactlyOneSuccessfulInitialFunding() throws Exception {
             String location = mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, freshKey())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"cardholderName": "José García", "initialBalance": 100.50}
@@ -93,6 +100,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
         @Test
         void rejectsInitialBalanceOutsidePostgreSQLNumericRange() throws Exception {
             mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, freshKey())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"cardholderName": "Andre", "initialBalance": 100000000000000000.00}
@@ -103,6 +111,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
         @Test
         void rejectsMissingInitialBalance() throws Exception {
             mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, freshKey())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"cardholderName": "Andre"}
@@ -113,6 +122,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
         @Test
         void rejectsMissingCardholderName() throws Exception {
             mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, freshKey())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"initialBalance": 10.00}
@@ -123,6 +133,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
         @Test
         void rejectsNegativeInitialBalance() throws Exception {
             mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, freshKey())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"cardholderName": "Andre", "initialBalance": -0.01}
@@ -133,6 +144,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
         @Test
         void rejectsAmountRequiringRounding() throws Exception {
             mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, freshKey())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"cardholderName": "Andre", "initialBalance": 20.001}
@@ -143,6 +155,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
         @Test
         void rejectsBlankCardholderNameFromDomainValidation() throws Exception {
             mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, freshKey())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"cardholderName": "   ", "initialBalance": 10}
@@ -157,6 +170,7 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
         @Test
         void returnsExistingCardWithExpectedRepresentation() throws Exception {
             String location = mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, freshKey())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"cardholderName": "Zoë Smith", "initialBalance": 40.25}
@@ -185,6 +199,96 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
         void returnsBadRequestForMalformedCardId() throws Exception {
             mockMvc.perform(get(CARDS_URL + "/not-a-uuid"))
                     .andExpect(status().isBadRequest());
+        }
+    }
+
+    @Nested
+    class Idempotency {
+
+        @Test
+        void replaysOriginalCardForSameKeyAndSemanticallyEquivalentPayload() throws Exception {
+            String key = freshKey();
+            long cardsBefore = cardRepository.count();
+
+            String firstLocation = mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, key)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 20}"))
+                    .andExpect(status().isCreated())
+                    .andReturn().getResponse().getHeader("Location");
+            UUID originalCardId = extractCardId(firstLocation);
+
+            String replayLocation = mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, key)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 20.00}"))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.id").value(originalCardId.toString()))
+                    .andExpect(jsonPath("$.balance").value(20.00))
+                    .andReturn().getResponse().getHeader("Location");
+
+            assertThat(extractCardId(replayLocation)).isEqualTo(originalCardId);
+            assertThat(cardRepository.count()).isEqualTo(cardsBefore + 1);
+
+            var transactions = cardTransactionRepository
+                    .findByCardIdOrderByCreatedAtDescIdDesc(originalCardId, Pageable.unpaged())
+                    .getContent();
+            assertThat(transactions).hasSize(1); // exactly one INITIAL_FUNDING, none from replay
+            assertThat(transactions.get(0).getType()).isEqualTo(TransactionType.INITIAL_FUNDING);
+            assertThat(transactions.get(0).getStatus()).isEqualTo(TransactionStatus.SUCCESSFUL);
+        }
+
+        @Test
+        void conflictsWhenCreatePayloadChangesUnderSameKey() throws Exception {
+            String key = freshKey();
+            long cardsBefore = cardRepository.count();
+
+            mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, key)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 20}"))
+                    .andExpect(status().isCreated());
+
+            mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, key)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 30}"))
+                    .andExpect(status().isConflict());
+
+            mockMvc.perform(post(CARDS_URL)
+                            .header(KEY_HEADER, key)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"cardholderName\": \"Andre Cassar\", \"initialBalance\": 20}"))
+                    .andExpect(status().isConflict());
+
+            assertThat(cardRepository.count()).isEqualTo(cardsBefore + 1);
+        }
+
+        @Test
+        void missingHeaderReturns400WithoutCreatingAnything() throws Exception {
+            long cardsBefore = cardRepository.count();
+
+            mockMvc.perform(post(CARDS_URL)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 10}"))
+                    .andExpect(status().isBadRequest());
+
+            assertThat(cardRepository.count()).isEqualTo(cardsBefore);
+        }
+
+        @Test
+        void invalidKeysReturn400WithoutCreatingAnything() throws Exception {
+            long cardsBefore = cardRepository.count();
+
+            for (String badKey : new String[]{"   ", "a".repeat(129), "bad key!", "key\n", "key\t"}) {
+                mockMvc.perform(post(CARDS_URL)
+                                .header(KEY_HEADER, badKey)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"cardholderName\": \"Andre\", \"initialBalance\": 10}"))
+                        .andExpect(status().isBadRequest());
+            }
+
+            assertThat(cardRepository.count()).isEqualTo(cardsBefore);
         }
     }
 }
