@@ -1,5 +1,6 @@
 package com.andre.virtualcard.transaction;
 
+import com.andre.virtualcard.common.error.CardMutationDeclinedException;
 import com.andre.virtualcard.transaction.CardMutationResult.Declined;
 import com.andre.virtualcard.transaction.CardMutationResult.Successful;
 import jakarta.validation.Valid;
@@ -14,7 +15,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -58,18 +58,8 @@ public class CardTransactionController {
         if (result instanceof Successful successful) {
             return ResponseEntity.status(HttpStatus.CREATED).body(successful.transaction());
         }
-        DeclineReason reason = ((Declined) result).reason();
-        HttpStatus status = reason == DeclineReason.INSUFFICIENT_FUNDS
-                ? HttpStatus.UNPROCESSABLE_ENTITY
-                : HttpStatus.CONFLICT;
-        return ResponseEntity.status(status).body(Map.of("message", declineMessage(reason)));
-    }
-
-    private String declineMessage(DeclineReason reason) {
-        return switch (reason) {
-            case INSUFFICIENT_FUNDS -> "The card has insufficient funds for this transaction.";
-            case CARD_BLOCKED -> "The card is blocked.";
-            case CARD_CLOSED -> "The card is closed.";
-        };
+        // thrown only after the transactional service returned, so the persisted
+        // DECLINED transaction is already committed
+        throw new CardMutationDeclinedException(((Declined) result).reason());
     }
 }

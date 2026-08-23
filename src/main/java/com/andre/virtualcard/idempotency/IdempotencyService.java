@@ -96,10 +96,11 @@ public class IdempotencyService {
                 .findByOperationTypeAndResourceIdAndIdempotencyKey(operation, resourceId, key)
                 .orElseThrow(() -> new IllegalStateException(
                         "Idempotency claim conflict resolved but no committed row was found for scope ("
-                                + operation + ", " + resourceId + ", " + key + ")"
+                                + operation + ", " + resourceId + ", idempotencyKeyHash="
+                                + IdempotencyKeyHasher.hash(key) + ")"
                 ));
         if (!existing.getRequestFingerprint().equals(fingerprint)) {
-            throw new IdempotencyConflictException(operation, resourceId, key);
+            throw new IdempotencyConflictException();
         }
         return new Replayed(existing);
     }

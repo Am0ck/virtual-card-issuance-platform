@@ -143,7 +143,7 @@ class CardTransactionApiIntegrationTest extends AbstractPostgreSQLIntegrationTes
 
             spend(cardId, "50")
                     .andExpect(status().isUnprocessableEntity())
-                    .andExpect(jsonPath("$.message").isNotEmpty());
+                    .andExpect(jsonPath("$.detail").isNotEmpty());
 
             assertThat(balanceOf(cardId)).isEqualTo("20.00");
 
@@ -162,7 +162,7 @@ class CardTransactionApiIntegrationTest extends AbstractPostgreSQLIntegrationTes
 
             spend(cardId, "10")
                     .andExpect(status().isConflict())
-                    .andExpect(jsonPath("$.message").isNotEmpty());
+                    .andExpect(jsonPath("$.detail").isNotEmpty());
 
             assertThat(balanceOf(cardId)).isEqualTo("100.00");
 

@@ -1,12 +1,12 @@
 package com.andre.virtualcard.idempotency;
 
-import java.util.UUID;
-
+/**
+ * The raw Idempotency-Key is deliberately never part of this message:
+ * it must not leak into ProblemDetail responses or logs.
+ */
 public class IdempotencyConflictException extends RuntimeException {
 
-    public IdempotencyConflictException(IdempotencyOperation operation, UUID resourceId, String key) {
-        super("Idempotency key '" + key + "' was already used for "
-                + operation + (resourceId == null ? "" : " on resource " + resourceId)
-                + " with a different request payload");
+    public IdempotencyConflictException() {
+        super("This idempotency key has already been used for a different request payload.");
     }
 }
