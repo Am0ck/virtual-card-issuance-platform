@@ -5,19 +5,13 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
-import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(
-        name = "idempotency_request",
-        indexes = {
-                @Index(name = "idx_idempotency_request_expires_at", columnList = "expires_at")
-        }
-)
+@Table(name = "idempotency_request")
 public class IdempotencyRequest {
 
     @Id

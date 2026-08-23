@@ -5,7 +5,6 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
-import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
@@ -13,12 +12,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(
-        name = "card_transaction",
-        indexes = {
-                @Index(name = "idx_card_transaction_history", columnList = "card_id, created_at DESC, id DESC")
-        }
-)
+@Table(name = "card_transaction")
 public class CardTransaction {
 
     @Id

@@ -33,7 +33,14 @@ CREATE TABLE card_transaction (
     ),
     CONSTRAINT chk_card_transaction_type_status_reason CHECK (
         (type = 'INITIAL_FUNDING' AND status = 'SUCCESSFUL' AND decline_reason IS NULL)
-        OR (type IN ('TOP_UP', 'SPEND') AND status IN ('SUCCESSFUL', 'DECLINED', 'PENDING'))
+        OR (type = 'SPEND' AND status IN ('SUCCESSFUL', 'PENDING') AND decline_reason IS NULL)
+        OR (type = 'SPEND'
+            AND status = 'DECLINED'
+            AND decline_reason IN ('INSUFFICIENT_FUNDS', 'CARD_BLOCKED', 'CARD_CLOSED'))
+        OR (type = 'TOP_UP' AND status IN ('SUCCESSFUL', 'PENDING') AND decline_reason IS NULL)
+        OR (type = 'TOP_UP'
+            AND status = 'DECLINED'
+            AND decline_reason IN ('CARD_BLOCKED', 'CARD_CLOSED'))
     )
 );
 
