@@ -1,0 +1,188 @@
+package com.andre.virtualcard.transaction;
+
+import com.andre.virtualcard.card.Card;
+import com.andre.virtualcard.card.CardRepository;
+import com.andre.virtualcard.support.AbstractPostgreSQLIntegrationTest;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Pageable;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+class CardTransactionConcurrencyIntegrationTest extends AbstractPostgreSQLIntegrationTest {
+
+    private static final int WORKER_TIMEOUT_SECONDS = 30;
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private CardRepository cardRepository;
+
+    @Autowired
+    private CardTransactionRepository cardTransactionRepository;
+
+    @Autowired
+    private CardTransactionService cardTransactionService;
+
+    @Test
+    void twoCompetingSpendsSerializeAndCannotOverspend() throws Exception {
+        UUID cardId = createCard("100");
+        int workers = 2;
+
+        List<CardMutationResult> results = runConcurrently(workers, cardId,
+                () -> new AmountRequest(new BigDecimal("80")), CardTransactionService::spend);
+
+        assertThat(results).hasSize(2);
+        long successful = results.stream().filter(CardMutationResult.Successful.class::isInstance).count();
+        long declinedInsufficientFunds = results.stream()
+                .filter(CardMutationResult.Declined.class::isInstance)
+                .map(CardMutationResult.Declined.class::cast)
+                .filter(r -> r.reason() == DeclineReason.INSUFFICIENT_FUNDS)
+                .count();
+        assertThat(successful).isEqualTo(1);
+        assertThat(declinedInsufficientFunds).isEqualTo(1);
+
+        assertThat(balanceOf(cardId)).isEqualByComparingTo("20.00");
+
+        List<CardTransaction> spendRows = spendRows(cardId);
+        assertThat(spendRows).hasSize(2);
+        assertThat(spendRows.stream().filter(t -> t.getStatus() == TransactionStatus.SUCCESSFUL)).hasSize(1);
+        List<CardTransaction> declined = spendRows.stream()
+                .filter(t -> t.getStatus() == TransactionStatus.DECLINED)
+                .toList();
+        assertThat(declined).hasSize(1);
+        assertThat(declined.get(0).getDeclineReason()).isEqualTo(DeclineReason.INSUFFICIENT_FUNDS);
+    }
+
+    @Test
+    void twentyConcurrentSpendsOfTenOnBalanceOneHundredProduceTenSuccessAndTenDeclines() throws Exception {
+        UUID cardId = createCard("100");
+        int workers = 20;
+
+        List<CardMutationResult> results = runConcurrently(workers, cardId,
+                () -> new AmountRequest(new BigDecimal("10")), CardTransactionService::spend);
+
+        long successful = results.stream().filter(CardMutationResult.Successful.class::isInstance).count();
+        long declinedInsufficientFunds = results.stream()
+                .filter(CardMutationResult.Declined.class::isInstance)
+                .map(CardMutationResult.Declined.class::cast)
+                .filter(r -> r.reason() == DeclineReason.INSUFFICIENT_FUNDS)
+                .count();
+        assertThat(successful).isEqualTo(10);
+        assertThat(declinedInsufficientFunds).isEqualTo(10);
+
+        assertThat(balanceOf(cardId)).isEqualByComparingTo("0.00");
+
+        List<CardTransaction> spendRows = spendRows(cardId);
+        assertThat(spendRows).hasSize(workers);
+        assertThat(spendRows.stream().filter(t -> t.getStatus() == TransactionStatus.SUCCESSFUL)).hasSize(10);
+        assertThat(spendRows.stream().filter(t -> t.getStatus() == TransactionStatus.DECLINED)).hasSize(10);
+        assertThat(spendRows.stream()
+                .filter(t -> t.getStatus() == TransactionStatus.SUCCESSFUL)
+                .map(CardTransaction::getDeclineReason))
+                .containsOnly((DeclineReason) null);
+        assertThat(spendRows.stream()
+                .filter(t -> t.getStatus() == TransactionStatus.DECLINED)
+                .map(CardTransaction::getDeclineReason))
+                .containsOnly(DeclineReason.INSUFFICIENT_FUNDS);
+    }
+
+    @Test
+    void concurrentTopUpsDoNotLoseUpdates() throws Exception {
+        UUID cardId = createCard("0");
+        int workers = 10;
+
+        List<CardMutationResult> results = runConcurrently(workers, cardId,
+                () -> new AmountRequest(new BigDecimal("10")), CardTransactionService::topUp);
+
+        assertThat(results).allSatisfy(r -> assertThat(r).isInstanceOf(CardMutationResult.Successful.class));
+
+        assertThat(balanceOf(cardId)).isEqualByComparingTo("100.00");
+
+        List<CardTransaction> topUpRows = cardTransactionRepository
+                .findByCardIdOrderByCreatedAtDescIdDesc(cardId, Pageable.unpaged())
+                .getContent()
+                .stream()
+                .filter(t -> t.getType() == TransactionType.TOP_UP)
+                .toList();
+        assertThat(topUpRows).hasSize(workers);
+        assertThat(topUpRows).allSatisfy(t -> assertThat(t.getStatus()).isEqualTo(TransactionStatus.SUCCESSFUL));
+    }
+
+    private List<CardMutationResult> runConcurrently(
+            int workers,
+            UUID cardId,
+            java.util.function.Supplier<AmountRequest> requestSupplier,
+            MutationCall call
+    ) throws Exception {
+        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        CountDownLatch ready = new CountDownLatch(workers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<CardMutationResult>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < workers; i++) {
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("start gate timed out");
+                    }
+                    return call.invoke(cardTransactionService, cardId, requestSupplier.get());
+                }));
+            }
+
+            assertThat(ready.await(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            List<CardMutationResult> results = new ArrayList<>(workers);
+            for (Future<CardMutationResult> future : futures) {
+                results.add(future.get(WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            }
+            return results;
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @FunctionalInterface
+    private interface MutationCall {
+        CardMutationResult invoke(CardTransactionService service, UUID cardId, AmountRequest request);
+    }
+
+    private UUID createCard(String initialBalance) throws Exception {
+        String location = mockMvc.perform(post("/api/v1/cards")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"cardholderName\": \"Andre Cassar Mockridge\", \"initialBalance\": "
+                                + initialBalance + "}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getHeader("Location");
+        return UUID.fromString(location.substring(location.lastIndexOf('/') + 1));
+    }
+
+    private BigDecimal balanceOf(UUID cardId) {
+        Card card = cardRepository.findById(cardId).orElseThrow();
+        return card.getBalance();
+    }
+
+    private List<CardTransaction> spendRows(UUID cardId) {
+        return cardTransactionRepository.findByCardIdOrderByCreatedAtDescIdDesc(cardId, Pageable.unpaged())
+                .getContent()
+                .stream()
+                .filter(t -> t.getType() == TransactionType.SPEND)
+                .toList();
+    }
+}

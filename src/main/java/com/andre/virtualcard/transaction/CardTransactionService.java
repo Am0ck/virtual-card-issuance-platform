@@ -59,7 +59,7 @@ public class CardTransactionService {
     }
 
     private CardMutationResult mutate(UUID cardId, AmountRequest request, TransactionType type) {
-        Card card = cardRepository.findById(cardId)
+        Card card = cardRepository.findByIdForUpdate(cardId)
                 .orElseThrow(() -> new CardNotFoundException(cardId));
 
         CardOperationResult result = type == TransactionType.SPEND
