@@ -263,6 +263,25 @@ an immutable accounting ledger with derived balances and reconciliation.
   idempotent replays are not. Guaranteed external delivery would require an
   outbox/broker design.
 
+### Bonus: asynchronous audit processing
+
+Audit handling is genuinely asynchronous:
+
+- events are published inside the business transaction and dispatched to a dedicated,
+  bounded `auditExecutor` (`@EnableAsync`, `ThreadPoolTaskExecutor`: core 2, max 4,
+  queue 100, `audit-` thread prefix) only **after commit**
+  (`@TransactionalEventListener(AFTER_COMMIT)` + `@Async("auditExecutor")`);
+- the request thread does not wait for audit processing to complete — a deliberately
+  blocked audit listener does not delay or fail an already-committed request;
+- request correlation (`requestId` MDC) is propagated onto the audit worker via a task
+  decorator, which clears worker MDC afterwards to prevent cross-task leakage;
+- executor saturation **discards** best-effort audit work with a warning (never runs it
+  on the request thread, never fails the caller), and listener failures are isolated —
+  neither can alter an already-committed financial result.
+
+This remains best-effort by design: guaranteed external audit delivery requires a
+transactional outbox + durable broker.
+
 ## Testing
 
 Integration tests run against real PostgreSQL via Testcontainers with Flyway-applied
