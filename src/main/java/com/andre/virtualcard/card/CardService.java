@@ -19,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 @Service
@@ -54,7 +55,9 @@ public class CardService {
         long startNano = System.nanoTime();
         boolean replay = false;
         try {
-            Instant createdAt = clock.instant();
+            // PostgreSQL TIMESTAMPTZ has microsecond resolution: truncate up front so the
+            // create response and later reads/idempotent replays carry the identical instant
+            Instant createdAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
             UUID cardId = UUID.randomUUID();
 
             Card candidate = Card.create(cardId, request.cardholderName(), request.initialBalance(), createdAt);

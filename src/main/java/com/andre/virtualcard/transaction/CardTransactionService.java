@@ -27,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 @Service
@@ -112,7 +113,9 @@ public class CardTransactionService {
                     ? card.spend(canonicalAmount)
                     : card.topUp(canonicalAmount);
 
-            Instant createdAt = clock.instant();
+            // PostgreSQL TIMESTAMPTZ has microsecond resolution: truncate up front so the
+            // mutation response and later reads/idempotent replays carry the identical instant
+            Instant createdAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
             UUID transactionId = UUID.randomUUID();
 
             CardTransaction transaction;

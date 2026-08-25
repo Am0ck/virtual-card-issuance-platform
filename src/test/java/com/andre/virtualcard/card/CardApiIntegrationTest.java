@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import java.util.UUID;
 
@@ -210,13 +211,15 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
             String key = freshKey();
             long cardsBefore = cardRepository.count();
 
-            String firstLocation = mockMvc.perform(post(CARDS_URL)
+            MvcResult firstResult = mockMvc.perform(post(CARDS_URL)
                             .header(KEY_HEADER, key)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"cardholderName\": \"Jane\", \"initialBalance\": 20}"))
                     .andExpect(status().isCreated())
-                    .andReturn().getResponse().getHeader("Location");
-            UUID originalCardId = extractCardId(firstLocation);
+                    .andReturn();
+            UUID originalCardId = extractCardId(firstResult.getResponse().getHeader("Location"));
+            String firstBody = firstResult.getResponse().getContentAsString();
+            String firstCreatedAt = firstBody.replaceAll(".*\"createdAt\":\"([^\"]+)\".*", "$1");
 
             String replayLocation = mockMvc.perform(post(CARDS_URL)
                             .header(KEY_HEADER, key)
@@ -225,6 +228,8 @@ class CardApiIntegrationTest extends AbstractPostgreSQLIntegrationTest {
                     .andExpect(status().isCreated())
                     .andExpect(jsonPath("$.id").value(originalCardId.toString()))
                     .andExpect(jsonPath("$.balance").value(20.00))
+                    // replay must return the exact same createdAt value
+                    .andExpect(jsonPath("$.createdAt").value(firstCreatedAt))
                     .andReturn().getResponse().getHeader("Location");
 
             assertThat(extractCardId(replayLocation)).isEqualTo(originalCardId);

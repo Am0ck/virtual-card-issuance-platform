@@ -375,21 +375,25 @@ class CardTransactionApiIntegrationTest extends AbstractPostgreSQLIntegrationTes
     class Idempotency {
 
         @Test
-        void replaysSuccessfulSpendWithSameTransactionIdWithoutSecondMutation() throws Exception {
+        void replaysSuccessfulSpendWithSameTransactionIdAndCreatedAtWithoutSecondMutation() throws Exception {
             UUID cardId = createCard("100");
             String key = freshKey();
 
-            String firstTxnId = spendWithKey(cardId, "25", key)
+            String firstBody = spendWithKey(cardId, "25", key)
                     .andExpect(status().isCreated())
-                    .andReturn().getResponse().getContentAsString()
-                    .replaceAll(".*\"id\":\"([0-9a-f-]{36})\".*", "$1");
+                    .andReturn().getResponse().getContentAsString();
+            String firstTxnId = firstBody.replaceAll(".*\"id\":\"([0-9a-f-]{36})\".*", "$1");
+            String firstCreatedAt = firstBody.replaceAll(
+                    ".*\"createdAt\":\"([^\"]+)\".*", "$1");
 
             mockMvc.perform(post("/api/v1/cards/" + cardId + "/spends")
                             .header("Idempotency-Key", key)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"amount\": 25.00}"))
                     .andExpect(status().isCreated())
-                    .andExpect(jsonPath("$.id").value(firstTxnId));
+                    .andExpect(jsonPath("$.id").value(firstTxnId))
+                    // replay must return the exact same createdAt value
+                    .andExpect(jsonPath("$.createdAt").value(firstCreatedAt));
 
             assertThat(balanceOf(cardId)).isEqualTo("75.00");
             assertThat(spendRows(cardId)).hasSize(1);
