@@ -32,7 +32,8 @@ class CardRepositoryPersistenceTest extends AbstractPostgreSQLIntegrationTest {
     void savesAndReadsBackACardThroughTheFlywayMigratedSchema() {
         UUID id = UUID.randomUUID();
         Instant createdAt = Instant.parse("2026-08-23T10:00:00Z");
-        Card card = Card.create(id, "Jane Doe", new BigDecimal("100.5"), createdAt);
+        Instant expiresAt = createdAt.plusSeconds(31_536_000);
+        Card card = Card.create(id, "Jane Doe", new BigDecimal("100.5"), createdAt, expiresAt);
 
         cardRepository.saveAndFlush(card);
         entityManager.clear();
@@ -44,6 +45,7 @@ class CardRepositoryPersistenceTest extends AbstractPostgreSQLIntegrationTest {
         assertEquals(new BigDecimal("100.50"), loaded.get().getBalance());
         assertEquals(CardStatus.ACTIVE, loaded.get().getStatus());
         assertEquals(createdAt, loaded.get().getCreatedAt());
+        assertEquals(expiresAt, loaded.get().getExpiresAt());
     }
 
     @Test
@@ -51,9 +53,31 @@ class CardRepositoryPersistenceTest extends AbstractPostgreSQLIntegrationTest {
         // adversarial DB-level check: the CHECK constraint defends the invariant even
         // against raw persistence that bypasses domain validation
         assertThrows(DataAccessException.class, () -> jdbcTemplate.update(
-                "INSERT INTO card (id, cardholder_name, balance, status, created_at) "
-                        + "VALUES (?, 'Direct Insert', -0.01, 'ACTIVE', now())",
+                "INSERT INTO card (id, cardholder_name, balance, status, created_at, expires_at) "
+                        + "VALUES (?, 'Direct Insert', -0.01, 'ACTIVE', now(), now() + interval '1 hour')",
                 UUID.randomUUID()));
+    }
+
+    @Test
+    void databaseRejectsExpiryNotStrictlyAfterCreationOnInsert() {
+        // adversarial raw insert mirroring the domain rule expiresAt > createdAt:
+        // equal timestamps must violate chk_card_expiry_after_creation
+        assertThrows(DataAccessException.class, () -> jdbcTemplate.update(
+                "INSERT INTO card (id, cardholder_name, balance, status, created_at, expires_at) "
+                        + "VALUES (?, 'Direct Insert', 10.00, 'ACTIVE', now(), now())",
+                UUID.randomUUID()));
+    }
+
+    @Test
+    void databaseRejectsUpdateMovingExpiryToOrBeforeCreation() {
+        UUID id = UUID.randomUUID();
+        jdbcTemplate.update(
+                "INSERT INTO card (id, cardholder_name, balance, status, created_at, expires_at) "
+                        + "VALUES (?, 'Jane Doe', 10.00, 'ACTIVE', now(), now() + interval '1 hour')",
+                id);
+
+        assertThrows(DataAccessException.class, () -> jdbcTemplate.update(
+                "UPDATE card SET expires_at = created_at WHERE id = ?", id));
     }
 
     @Test

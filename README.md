@@ -282,6 +282,47 @@ Audit handling is genuinely asynchronous:
 This remains best-effort by design: guaranteed external audit delivery requires a
 transactional outbox + durable broker.
 
+## Card expiration (bonus)
+
+Cards now have a scheduled lifetime:
+
+- **Lifetime**: every newly created card receives `expiresAt = createdAt +
+  card.expiration.lifetime` (default `P365D`), derived from the same `createdAt`
+  instant used for persistence — no second clock read. PostgreSQL time is NOT used
+  to create the timeline; it is authoritative only when deciding whether the
+  persisted deadline has been reached (see below).
+- **Internal property**: `expiresAt` is persisted on the `card` table but intentionally
+  not exposed in API responses; it is a lifecycle detail, not part of the public
+  contract. Pre-V2 rows were backfilled in migration V2 with a fixed 365-day duration
+  (fixed seconds, matching Java `Duration` semantics); newly created cards use the
+  application configuration.
+- **State mapping**: expiration transitions `ACTIVE → CLOSED` and `BLOCKED → CLOSED`;
+  `CLOSED` remains terminal. No new status or decline reason was introduced — expired
+  cards decline with the existing `CARD_CLOSED` semantics, and the decline persists as
+  normal history.
+- **Scheduler**: a periodic job (`card.expiration.cleanup-interval-ms`, default 60000 ms)
+  performs one DB-side bulk update using PostgreSQL `clock_timestamp()` as the
+  authoritative clock for deciding whether the persisted deadline has been reached.
+  It deliberately bypasses `Card.close()` for efficiency; the SQL
+  encodes exactly the same legal transitions. It is safe across multiple instances
+  (idempotent predicate + row-level locking).
+- **Request-time enforcement**: correctness does NOT depend on scheduler timing. Every
+  spend/top-up re-checks expiry after acquiring the pessimistic card row lock, against
+  PostgreSQL time (`SELECT clock_timestamp()`) — not the JVM clock. A request that
+  waited on the lock past the boundary still declines durably as `CARD_CLOSED`.
+- **No financial side effects**: expiration itself creates no transaction row, never
+  changes the balance, and never touches history. Only brand-new mutation attempts after
+  expiry persist DECLINED attempts.
+- **Idempotency unchanged**: an operation that succeeded before expiry replays its
+  original successful result even after the card expires; new keys evaluate current
+  state and decline.
+- **Reads**: GET card/history remain available after expiry and stay read-only.
+  The persisted status may lag the expiry boundary by up to one scheduler interval;
+  financial correctness is unaffected because mutations enforce expiry synchronously
+  after acquiring the card lock.
+- **Production evolution**: very large expired-card scans may later be batched and given
+  statement/lock timeouts.
+
 ## Testing
 
 Integration tests run against real PostgreSQL via Testcontainers with Flyway-applied

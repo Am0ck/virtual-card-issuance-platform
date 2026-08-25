@@ -33,6 +33,7 @@ public class CardService {
     private final OperationObservability observability;
     private final ApplicationEventPublisher eventPublisher;
     private final Clock clock;
+    private final CardExpirationProperties expirationProperties;
 
     public CardService(
             CardRepository cardRepository,
@@ -40,7 +41,8 @@ public class CardService {
             IdempotencyService idempotencyService,
             OperationObservability observability,
             ApplicationEventPublisher eventPublisher,
-            Clock clock
+            Clock clock,
+            CardExpirationProperties expirationProperties
     ) {
         this.cardRepository = cardRepository;
         this.cardTransactionRepository = cardTransactionRepository;
@@ -48,6 +50,7 @@ public class CardService {
         this.observability = observability;
         this.eventPublisher = eventPublisher;
         this.clock = clock;
+        this.expirationProperties = expirationProperties;
     }
 
     @Transactional
@@ -60,7 +63,12 @@ public class CardService {
             Instant createdAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
             UUID cardId = UUID.randomUUID();
 
-            Card candidate = Card.create(cardId, request.cardholderName(), request.initialBalance(), createdAt);
+            Card candidate = Card.create(
+                    cardId,
+                    request.cardholderName(),
+                    request.initialBalance(),
+                    createdAt,
+                    createdAt.plus(expirationProperties.lifetime()));
             String fingerprint = RequestFingerprint.forCardCreation(
                     candidate.getCardholderName(),
                     candidate.getBalance()

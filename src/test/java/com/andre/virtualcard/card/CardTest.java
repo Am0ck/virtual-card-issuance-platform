@@ -18,9 +18,10 @@ class CardTest {
 
     private static final UUID CARD_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private static final Instant CREATED_AT = Instant.parse("2026-08-23T10:00:00Z");
+    private static final Instant EXPIRES_AT = CREATED_AT.plusSeconds(31_536_000);
 
     private static Card activeCard(String initialBalance) {
-        return Card.create(CARD_ID, "Jane Doe", new BigDecimal(initialBalance), CREATED_AT);
+        return Card.create(CARD_ID, "Jane Doe", new BigDecimal(initialBalance), CREATED_AT, EXPIRES_AT);
     }
 
     @Nested
@@ -29,7 +30,7 @@ class CardTest {
         @Test
         void createsActiveCardWithTrimmedNameAndGivenBalance() {
             Card card = Card.create(
-                    CARD_ID, "  Jane Doe  ", new BigDecimal("100.5"), CREATED_AT);
+                    CARD_ID, "  Jane Doe  ", new BigDecimal("100.5"), CREATED_AT, EXPIRES_AT);
 
             assertEquals(CARD_ID, card.getId());
             assertEquals("Jane Doe", card.getCardholderName());
@@ -48,31 +49,31 @@ class CardTest {
         @Test
         void rejectsNegativeInitialBalance() {
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "Andre", new BigDecimal("-0.01"), CREATED_AT));
+                    () -> Card.create(CARD_ID, "Andre", new BigDecimal("-0.01"), CREATED_AT, EXPIRES_AT));
         }
 
         @Test
         void rejectsInitialBalanceRequiringRounding() {
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "Andre", new BigDecimal("10.123"), CREATED_AT));
+                    () -> Card.create(CARD_ID, "Andre", new BigDecimal("10.123"), CREATED_AT, EXPIRES_AT));
         }
 
         @Test
         void rejectsMissingIdentityOrName() {
             assertThrows(NullPointerException.class,
-                    () -> Card.create(null, "Andre", BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(null, "Andre", BigDecimal.TEN, CREATED_AT, EXPIRES_AT));
             assertThrows(NullPointerException.class,
-                    () -> Card.create(CARD_ID, null, BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(CARD_ID, null, BigDecimal.TEN, CREATED_AT, EXPIRES_AT));
             assertThrows(NullPointerException.class,
-                    () -> Card.create(CARD_ID, "Andre", BigDecimal.TEN, null));
+                    () -> Card.create(CARD_ID, "Andre", BigDecimal.TEN, null, EXPIRES_AT));
         }
 
         @Test
         void rejectsBlankOrOverlongCardholderName() {
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "   ", BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(CARD_ID, "   ", BigDecimal.TEN, CREATED_AT, EXPIRES_AT));
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "A".repeat(101), BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(CARD_ID, "A".repeat(101), BigDecimal.TEN, CREATED_AT, EXPIRES_AT));
         }
 
         @Test
@@ -80,7 +81,7 @@ class CardTest {
             String[] validNames = {"José García", "Anne-Marie O'Connor", "Zoë Smith"};
 
             for (String name : validNames) {
-                Card card = Card.create(CARD_ID, name, BigDecimal.TEN, CREATED_AT);
+                Card card = Card.create(CARD_ID, name, BigDecimal.TEN, CREATED_AT, EXPIRES_AT);
                 assertEquals(name, card.getCardholderName());
             }
         }
@@ -88,22 +89,22 @@ class CardTest {
         @Test
         void rejectsNumericalDigitsIncludingNonAsciiDecimals() {
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "Jane123", BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(CARD_ID, "Jane123", BigDecimal.TEN, CREATED_AT, EXPIRES_AT));
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "Jane\u0662", BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(CARD_ID, "Jane\u0662", BigDecimal.TEN, CREATED_AT, EXPIRES_AT));
         }
 
         @Test
         void rejectsControlCharactersBeforeNormalization() {
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "Jane\nDoe", BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(CARD_ID, "Jane\nDoe", BigDecimal.TEN, CREATED_AT, EXPIRES_AT));
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "Jane\tDoe", BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(CARD_ID, "Jane\tDoe", BigDecimal.TEN, CREATED_AT, EXPIRES_AT));
         }
 
         @Test
         void preservesInternalSpacingCaseAndPunctuation() {
-            Card card = Card.create(CARD_ID, "  anne-marie  o'connor  ", BigDecimal.TEN, CREATED_AT);
+            Card card = Card.create(CARD_ID, "  anne-marie  o'connor  ", BigDecimal.TEN, CREATED_AT, EXPIRES_AT);
 
             assertEquals("anne-marie  o'connor", card.getCardholderName());
         }
@@ -114,11 +115,11 @@ class CardTest {
             String overLimitInCodePoints = deseretLetter.repeat(100) + "A";
 
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, overLimitInCodePoints, BigDecimal.TEN, CREATED_AT));
+                    () -> Card.create(CARD_ID, overLimitInCodePoints, BigDecimal.TEN, CREATED_AT, EXPIRES_AT));
 
             String withinLimitInCodePointsButOverUtf16Units = deseretLetter.repeat(50) + "A";
             Card card = Card.create(
-                    CARD_ID, withinLimitInCodePointsButOverUtf16Units, BigDecimal.TEN, CREATED_AT);
+                    CARD_ID, withinLimitInCodePointsButOverUtf16Units, BigDecimal.TEN, CREATED_AT, EXPIRES_AT);
             assertEquals(withinLimitInCodePointsButOverUtf16Units, card.getCardholderName());
         }
     }
@@ -236,7 +237,7 @@ class CardTest {
         @Test
         void rejectsInitialBalanceExceedingNumericRange() {
             assertThrows(IllegalArgumentException.class,
-                    () -> Card.create(CARD_ID, "Andre", new BigDecimal("100000000000000000.00"), CREATED_AT));
+                    () -> Card.create(CARD_ID, "Andre", new BigDecimal("100000000000000000.00"), CREATED_AT, EXPIRES_AT));
         }
 
         @Test
@@ -342,6 +343,82 @@ class CardTest {
 
             assertInstanceOf(Successful.class, result);
             assertEquals(new BigDecimal("6.00"), card.getBalance());
+        }
+    }
+
+    @Nested
+    class Expiration {
+
+        @Test
+        void newCardCarriesDeterministicExpiresAt() {
+            Card card = activeCard("10");
+
+            assertEquals(EXPIRES_AT, card.getExpiresAt());
+        }
+
+        @Test
+        void rejectsMissingOrNonLaterExpiresAt() {
+            assertThrows(NullPointerException.class,
+                    () -> Card.create(CARD_ID, "Jane Doe", BigDecimal.TEN, CREATED_AT, null));
+            assertThrows(IllegalArgumentException.class,
+                    () -> Card.create(CARD_ID, "Jane Doe", BigDecimal.TEN, CREATED_AT, CREATED_AT));
+            assertThrows(IllegalArgumentException.class,
+                    () -> Card.create(CARD_ID, "Jane Doe", BigDecimal.TEN,
+                            CREATED_AT, CREATED_AT.minusSeconds(1)));
+        }
+
+        @Test
+        void activeCardTransitionsToClosedAtExactBoundaryAndAfter() {
+            Card atBoundary = activeCard("10");
+            atBoundary.expireIfPast(EXPIRES_AT); // expires_at <= dbNow means expired
+
+            assertEquals(CardStatus.CLOSED, atBoundary.getStatus());
+
+            Card afterBoundary = activeCard("10");
+            afterBoundary.expireIfPast(EXPIRES_AT.plusSeconds(1));
+
+            assertEquals(CardStatus.CLOSED, afterBoundary.getStatus());
+        }
+
+        @Test
+        void blockedCardTransitionsToClosedOnExpiry() {
+            Card card = activeCard("10");
+            card.block();
+            card.expireIfPast(EXPIRES_AT);
+
+            assertEquals(CardStatus.CLOSED, card.getStatus());
+        }
+
+        @Test
+        void closedCardRemainsClosedWhenExpireIfPastIsApplied() {
+            Card card = activeCard("10");
+            card.close();
+            card.expireIfPast(EXPIRES_AT);
+
+            assertEquals(CardStatus.CLOSED, card.getStatus());
+        }
+
+        @Test
+        void noTransitionBeforeExpiry() {
+            Card active = activeCard("10");
+            active.expireIfPast(EXPIRES_AT.minusNanos(1));
+
+            assertEquals(CardStatus.ACTIVE, active.getStatus());
+
+            Card blocked = activeCard("10");
+            blocked.block();
+            blocked.expireIfPast(EXPIRES_AT.minusNanos(1));
+
+            assertEquals(CardStatus.BLOCKED, blocked.getStatus());
+        }
+
+        @Test
+        void expiryDoesNotTouchBalance() {
+            Card card = activeCard("100");
+            card.expireIfPast(EXPIRES_AT);
+
+            assertEquals(CardStatus.CLOSED, card.getStatus());
+            assertEquals(new BigDecimal("100.00"), card.getBalance());
         }
     }
 }

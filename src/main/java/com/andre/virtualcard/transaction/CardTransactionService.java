@@ -21,6 +21,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -42,6 +43,9 @@ public class CardTransactionService {
     private final OperationObservability observability;
     private final ApplicationEventPublisher eventPublisher;
     private final Clock clock;
+    private final JdbcTemplate jdbcTemplate;
+
+    private static final String DB_NOW_SQL = "SELECT clock_timestamp()";
 
     public CardTransactionService(
             CardRepository cardRepository,
@@ -49,7 +53,8 @@ public class CardTransactionService {
             IdempotencyService idempotencyService,
             OperationObservability observability,
             ApplicationEventPublisher eventPublisher,
-            Clock clock
+            Clock clock,
+            JdbcTemplate jdbcTemplate
     ) {
         this.cardRepository = cardRepository;
         this.cardTransactionRepository = cardTransactionRepository;
@@ -57,6 +62,7 @@ public class CardTransactionService {
         this.observability = observability;
         this.eventPublisher = eventPublisher;
         this.clock = clock;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     @Transactional
@@ -108,6 +114,13 @@ public class CardTransactionService {
 
             Card card = cardRepository.findByIdForUpdate(cardId)
                     .orElseThrow(() -> new CardNotFoundException(cardId));
+
+            // Authoritative expiry check AFTER acquiring the row lock: a request that
+            // waited on the lock past the expiry boundary must still decline. PostgreSQL
+            // time (clock_timestamp()) is the authority, matching the scheduler's clock;
+            // expireIfPast materializes CLOSED in this same transaction when due.
+            Instant databaseNow = jdbcTemplate.queryForObject(DB_NOW_SQL, Instant.class);
+            card.expireIfPast(databaseNow);
 
             CardOperationResult result = type == TransactionType.SPEND
                     ? card.spend(canonicalAmount)

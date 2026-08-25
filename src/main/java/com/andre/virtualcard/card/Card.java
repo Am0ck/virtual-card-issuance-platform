@@ -37,23 +37,33 @@ public class Card {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
+    @Column(name = "expires_at", nullable = false, updatable = false)
+    private Instant expiresAt;
+
     protected Card() {
     }
 
-    private Card(UUID id, String cardholderName, BigDecimal balance, CardStatus status, Instant createdAt) {
+    private Card(UUID id, String cardholderName, BigDecimal balance, CardStatus status,
+                 Instant createdAt, Instant expiresAt) {
         this.id = id;
         this.cardholderName = cardholderName;
         this.balance = balance;
         this.status = status;
         this.createdAt = createdAt;
+        this.expiresAt = expiresAt;
     }
 
-    public static Card create(UUID id, String cardholderName, BigDecimal initialBalance, Instant createdAt) {
+    public static Card create(UUID id, String cardholderName, BigDecimal initialBalance,
+                              Instant createdAt, Instant expiresAt) {
         Objects.requireNonNull(id, "id must not be null");
         Objects.requireNonNull(createdAt, "createdAt must not be null");
+        Objects.requireNonNull(expiresAt, "expiresAt must not be null");
+        if (!expiresAt.isAfter(createdAt)) {
+            throw new IllegalArgumentException("expiresAt must be strictly after createdAt");
+        }
         String normalizedName = requireCardholderName(cardholderName);
         BigDecimal balance = MonetaryAmounts.requireNonNegative(initialBalance, "initialBalance");
-        return new Card(id, normalizedName, balance, CardStatus.ACTIVE, createdAt);
+        return new Card(id, normalizedName, balance, CardStatus.ACTIVE, createdAt, expiresAt);
     }
 
     public CardOperationResult spend(BigDecimal amount) {
@@ -100,6 +110,20 @@ public class Card {
             throw new IllegalStateException("A CLOSED card is terminal");
         }
         status = CardStatus.CLOSED;
+    }
+
+    /**
+     * Expiration lifecycle: if the card's expiry has passed relative to the
+     * authoritative database time, transition ACTIVE/BLOCKED to terminal CLOSED.
+     * CLOSED remains CLOSED. This is a lifecycle event, not a financial
+     * transaction: balance and history are untouched.
+     */
+    public void expireIfPast(Instant dbNow) {
+        Objects.requireNonNull(dbNow, "dbNow must not be null");
+        if (!expiresAt.isAfter(dbNow)
+                && (status == CardStatus.ACTIVE || status == CardStatus.BLOCKED)) {
+            status = CardStatus.CLOSED;
+        }
     }
 
     private DeclineReason declineForInactiveCard() {
@@ -164,5 +188,9 @@ public class Card {
 
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    public Instant getExpiresAt() {
+        return expiresAt;
     }
 }
