@@ -9,6 +9,7 @@ public enum ApiErrorCode {
     IDEMPOTENCY_CONFLICT("Idempotency conflict"),
     METHOD_NOT_ALLOWED("Method not allowed"),
     UNSUPPORTED_MEDIA_TYPE("Unsupported media type"),
+    RATE_LIMIT_EXCEEDED("Rate limit exceeded"),
     INTERNAL_ERROR("Internal error");
 
     private final String title;

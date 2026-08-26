@@ -25,6 +25,8 @@ can operate against the same database.
 | Flyway | schema migrations |
 | Testcontainers | 2.x, integration tests |
 | Micrometer / Spring Boot Actuator | metrics & health |
+| Bucket4j | token-bucket rate limiting |
+| Caffeine | rate-limit bucket cache |
 | Docker Compose | local PostgreSQL |
 
 No H2: integration tests run against real PostgreSQL through Testcontainers.
@@ -142,10 +144,60 @@ code and correlation id:
 | 409 | `CARD_BLOCKED` / `CARD_CLOSED` / `IDEMPOTENCY_CONFLICT` |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` |
 | 422 | `INSUFFICIENT_FUNDS` |
+| 429 | `RATE_LIMIT_EXCEEDED` — request quota exhausted per client and policy |
 | 500 | `INTERNAL_ERROR` — sanitized, no internals exposed |
 
 Every response carries `X-Request-Id` (server-generated UUID) which matches the
 ProblemDetail `requestId`.
+
+### Bonus: DoS / overuse protection
+
+Per-client rate limiting protects the service from runaway or hostile traffic without
+external gateway dependencies.
+
+- **Two independent policies**: `HEALTH` (exact `/actuator/health` only) and `API`
+  (every other route), each with its own token-bucket capacity and refill rate.
+- **Per-client isolation**: clients are identified by `request.getRemoteAddr()` (the
+  TCP-level peer address). Raw forwarding headers (`X-Forwarded-For`, `X-Real-IP`) are
+  deliberately not trusted in the default configuration — a server accepting these
+  headers without a configured trusted-proxy boundary can be trivially spoofed. In
+  production, the ingress layer (CDN, load balancer, API gateway) should strip or
+  overwrite these headers and expose an authoritative client address as the remote addr.
+- **Token-bucket algorithm**: Bucket4j (JDK 17, v8.19) enforces a smooth, burst-tolerant
+  limit. Buckets are held in a Caffeine cache (max 10 000 entries, 10-minute idle expiry)
+  so unbounded per-client state never accumulates.
+- **Filter ordering**: `RateLimitFilter` runs after `RequestIdFilter`, so the problem
+  detail carries a valid `requestId` even on rejection.
+- **Rejection shape**: `429 Too Many Requests` with standard ProblemDetail
+  (`RATE_LIMIT_EXCEEDED`) plus a `Retry-After` header (seconds until the next token
+  becomes available).
+- **Zero side-effect on rejection**: no database writes, no idempotency claims, no
+  transaction rows. The filter short-circuits before the dispatcher reaches any
+  controller.
+- **Metrics**: a Micrometer counter `virtual_card.rate_limit.rejected` with a `policy`
+  tag tracks every rejection for alerting and capacity planning.
+- **Configurable properties** (Spring properties):
+
+| Property | Default | Description |
+|---|---|---|
+| `rate-limit.enabled` | `true` | Global kill-switch; set `false` to bypass the filter entirely |
+| `rate-limit.api.capacity` | `600` | Maximum burst tokens for the `API` policy |
+| `rate-limit.api.refill-tokens` | `600` | Tokens added per refill period |
+| `rate-limit.api.refill-period` | `PT1M` | ISO-8601 refill interval |
+| `rate-limit.health.capacity` | `300` | Maximum burst tokens for the `HEALTH` policy |
+| `rate-limit.health.refill-tokens` | `300` | Tokens added per refill period |
+| `rate-limit.health.refill-period` | `PT1M` | ISO-8601 refill interval |
+| `rate-limit.cache.maximum-size` | `10000` | Maximum number of tracked clients |
+| `rate-limit.cache.expire-after-access` | `PT10M` | Idle entries evict after this duration |
+
+Default production values: API token bucket with capacity 600 refilling at 600
+tokens/minute; health bucket with capacity 300 refilling at 300 tokens/minute.
+These are generous for normal traffic, yet sufficient to bound application-level
+work for a single identified client. The quota is held in-memory per application
+instance and is **not** globally coordinated across replicas; volumetric DDoS
+protection and globally consistent rate enforcement belong at the CDN / WAF /
+API-gateway layer, or require shared state if an application-level distributed
+quota is needed.
 
 ### Idempotent replay semantics
 
@@ -327,7 +379,9 @@ Cards now have a scheduled lifetime:
 
 Integration tests run against real PostgreSQL via Testcontainers with Flyway-applied
 schema — no H2, no dependency on any locally running database. Deterministic
-coordination uses latches/barriers with finite timeouts, never sleeps.
+coordination uses latches/barriers with finite timeouts, never sleeps. Rate-limit
+tests use tiny quotas (capacity 2, no intra-test refill) with unique per-test client
+IPs to guarantee isolation without cache-clearing hacks.
 
 Highlights:
 
@@ -339,6 +393,8 @@ Highlights:
 - missing-card requests leave no retained idempotency claim (rollback proven)
 - cleanup deletes only expired rows and leaves card/transaction data intact
 - ProblemDetail contract, X-Request-Id correlation, metric deltas
+- rate limiter: quota exhaustion, client isolation, policy isolation (API vs Health),
+  zero DB writes on rejection, ProblemDetail + Retry-After + X-Request-Id contract
 
 ## Design trade-offs
 
@@ -364,7 +420,7 @@ a load balancer. Not implemented, but clear next steps:
 - measured Hikari pool tuning against the PostgreSQL connection budget
 - finite row-lock/statement timeouts with retryable `503` mapping for hot cards
 - authentication/authorization
-- rate limiting at an API gateway
+- application-level rate limiting moved to an external API gateway for multi-service setups
 - immutable financial ledger + reconciliation
 - transactional outbox → broker for guaranteed external audit delivery
 - keyset/cursor pagination for very large histories

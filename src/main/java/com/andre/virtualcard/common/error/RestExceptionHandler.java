@@ -3,7 +3,6 @@ package com.andre.virtualcard.common.error;
 import com.andre.virtualcard.card.CardNotFoundException;
 import com.andre.virtualcard.idempotency.IdempotencyConflictException;
 import jakarta.servlet.http.HttpServletRequest;
-import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -18,6 +17,12 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
 public class RestExceptionHandler {
+
+    private final ProblemDetailFactory problemDetailFactory;
+
+    public RestExceptionHandler(ProblemDetailFactory problemDetailFactory) {
+        this.problemDetailFactory = problemDetailFactory;
+    }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ProblemDetail handleValidationFailure(MethodArgumentNotValidException e, HttpServletRequest request) {
@@ -103,15 +108,6 @@ public class RestExceptionHandler {
     }
 
     private ProblemDetail problem(HttpStatus status, ApiErrorCode code, String detail, HttpServletRequest request) {
-        ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
-        problem.setType(java.net.URI.create(URI_URN_PREFIX + code.typeSlug()));
-        problem.setTitle(code.getTitle());
-        problem.setInstance(java.net.URI.create(URI_INSTANCE_PREFIX + request.getRequestURI()));
-        problem.setProperty("code", code.name());
-        problem.setProperty("requestId", MDC.get("requestId"));
-        return problem;
+        return problemDetailFactory.create(status, code, detail, request);
     }
-
-    private static final String URI_URN_PREFIX = "urn:problem:";
-    private static final String URI_INSTANCE_PREFIX = "";
 }
