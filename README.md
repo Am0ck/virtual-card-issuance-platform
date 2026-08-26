@@ -150,55 +150,6 @@ code and correlation id:
 Every response carries `X-Request-Id` (server-generated UUID) which matches the
 ProblemDetail `requestId`.
 
-### Bonus: DoS / overuse protection
-
-Per-client rate limiting protects the service from runaway or hostile traffic without
-external gateway dependencies.
-
-- **Two independent policies**: `HEALTH` (exact `/actuator/health` only) and `API`
-  (every other route), each with its own token-bucket capacity and refill rate.
-- **Per-client isolation**: clients are identified by `request.getRemoteAddr()` (the
-  TCP-level peer address). Raw forwarding headers (`X-Forwarded-For`, `X-Real-IP`) are
-  deliberately not trusted in the default configuration — a server accepting these
-  headers without a configured trusted-proxy boundary can be trivially spoofed. In
-  production, the ingress layer (CDN, load balancer, API gateway) should strip or
-  overwrite these headers and expose an authoritative client address as the remote addr.
-- **Token-bucket algorithm**: Bucket4j (JDK 17, v8.19) enforces a smooth, burst-tolerant
-  limit. Buckets are held in a Caffeine cache (max 10 000 entries, 10-minute idle expiry)
-  so unbounded per-client state never accumulates.
-- **Filter ordering**: `RateLimitFilter` runs after `RequestIdFilter`, so the problem
-  detail carries a valid `requestId` even on rejection.
-- **Rejection shape**: `429 Too Many Requests` with standard ProblemDetail
-  (`RATE_LIMIT_EXCEEDED`) plus a `Retry-After` header (seconds until the next token
-  becomes available).
-- **Zero side-effect on rejection**: no database writes, no idempotency claims, no
-  transaction rows. The filter short-circuits before the dispatcher reaches any
-  controller.
-- **Metrics**: a Micrometer counter `virtual_card.rate_limit.rejected` with a `policy`
-  tag tracks every rejection for alerting and capacity planning.
-- **Configurable properties** (Spring properties):
-
-| Property | Default | Description |
-|---|---|---|
-| `rate-limit.enabled` | `true` | Global kill-switch; set `false` to bypass the filter entirely |
-| `rate-limit.api.capacity` | `600` | Maximum burst tokens for the `API` policy |
-| `rate-limit.api.refill-tokens` | `600` | Tokens added per refill period |
-| `rate-limit.api.refill-period` | `PT1M` | ISO-8601 refill interval |
-| `rate-limit.health.capacity` | `300` | Maximum burst tokens for the `HEALTH` policy |
-| `rate-limit.health.refill-tokens` | `300` | Tokens added per refill period |
-| `rate-limit.health.refill-period` | `PT1M` | ISO-8601 refill interval |
-| `rate-limit.cache.maximum-size` | `10000` | Maximum number of tracked clients |
-| `rate-limit.cache.expire-after-access` | `PT10M` | Idle entries evict after this duration |
-
-Default production values: API token bucket with capacity 600 refilling at 600
-tokens/minute; health bucket with capacity 300 refilling at 300 tokens/minute.
-These are generous for normal traffic, yet sufficient to bound application-level
-work for a single identified client. The quota is held in-memory per application
-instance and is **not** globally coordinated across replicas; volumetric DDoS
-protection and globally consistent rate enforcement belong at the CDN / WAF /
-API-gateway layer, or require shared state if an application-level distributed
-quota is needed.
-
 ### Idempotent replay semantics
 
 Retrying a mutation with the same key and the same logical payload returns the same
@@ -267,7 +218,7 @@ balance later changes, until retention expires.
 ## Concurrency and transaction model
 
 - PostgreSQL is the concurrency authority; there are no JVM-local locks and no JVM state
-  that affects correctness.
+  that affects financial correctness.
 - Isolation stays at the default READ COMMITTED.
 - Mutations load the card through a JPA pessimistic write lock
   (`LockModeType.PESSIMISTIC_WRITE`, i.e. a PostgreSQL row-level lock): mutations to the
@@ -314,8 +265,15 @@ an immutable accounting ledger with derived balances and reconciliation.
   committed mutations (including declines) are audited after commit; rollbacks and
   idempotent replays are not. Guaranteed external delivery would require an
   outbox/broker design.
+- Rate-limit rejections are tracked through
+  `virtual_card.rate_limit.rejected{policy}` without high-cardinality client identifiers.
 
-### Bonus: asynchronous audit processing
+## Optional bonuses
+
+All four optional extensions from the assignment are implemented without making
+financial correctness depend on non-authoritative application-local state.
+
+### Asynchronous audit processing
 
 Audit handling is genuinely asynchronous:
 
@@ -334,9 +292,9 @@ Audit handling is genuinely asynchronous:
 This remains best-effort by design: guaranteed external audit delivery requires a
 transactional outbox + durable broker.
 
-## Card expiration (bonus)
+### Scheduled card expiration
 
-Cards now have a scheduled lifetime:
+Cards have a scheduled lifetime:
 
 - **Lifetime**: every newly created card receives `expiresAt = createdAt +
   card.expiration.lifetime` (default `P365D`), derived from the same `createdAt`
@@ -375,6 +333,66 @@ Cards now have a scheduled lifetime:
 - **Production evolution**: very large expired-card scans may later be batched and given
   statement/lock timeouts.
 
+### DoS / overuse protection
+
+Per-client rate limiting protects the service from runaway or hostile traffic without
+external gateway dependencies.
+
+- **Two independent policies**: `HEALTH` (exact `/actuator/health` only) and `API`
+  (every other route), each with its own token-bucket capacity and refill rate.
+- **Per-client isolation**: clients are identified by `request.getRemoteAddr()` (the
+  TCP-level peer address). Raw forwarding headers (`X-Forwarded-For`, `X-Real-IP`) are
+  deliberately not trusted in the default configuration — a server accepting these
+  headers without a configured trusted-proxy boundary can be trivially spoofed. In
+  production, the ingress layer (CDN, load balancer, API gateway) should strip or
+  overwrite these headers and expose an authoritative client address as the remote addr.
+- **Token-bucket algorithm**: Bucket4j (JDK 17, v8.19) enforces a smooth, burst-tolerant
+  limit. Buckets are held in a Caffeine cache (max 10 000 entries, 10-minute idle expiry)
+  so unbounded per-client state never accumulates.
+- **Filter ordering**: `RateLimitFilter` runs after `RequestIdFilter`, so the problem
+  detail carries a valid `requestId` even on rejection.
+- **Rejection shape**: `429 Too Many Requests` with standard ProblemDetail
+  (`RATE_LIMIT_EXCEEDED`) plus a `Retry-After` header (seconds until the next token
+  becomes available).
+- **Zero side-effect on rejection**: no database writes, no idempotency claims, no
+  transaction rows. The filter short-circuits before the dispatcher reaches any
+  controller.
+- **Metrics**: a Micrometer counter `virtual_card.rate_limit.rejected` with a `policy`
+  tag tracks every rejection for alerting and capacity planning.
+- **Configurable properties** (Spring properties):
+
+| Property | Default | Description |
+|---|---|---|
+| `rate-limit.enabled` | `true` | Global kill-switch; set `false` to bypass the filter entirely |
+| `rate-limit.api.capacity` | `600` | Maximum burst tokens for the `API` policy |
+| `rate-limit.api.refill-tokens` | `600` | Tokens added per refill period |
+| `rate-limit.api.refill-period` | `PT1M` | ISO-8601 refill interval |
+| `rate-limit.health.capacity` | `300` | Maximum burst tokens for the `HEALTH` policy |
+| `rate-limit.health.refill-tokens` | `300` | Tokens added per refill period |
+| `rate-limit.health.refill-period` | `PT1M` | ISO-8601 refill interval |
+| `rate-limit.cache.maximum-size` | `10000` | Maximum number of tracked clients |
+| `rate-limit.cache.expire-after-access` | `PT10M` | Idle entries evict after this duration |
+
+Default configured values: API token bucket with capacity 600 refilling at 600
+tokens/minute; health bucket with capacity 300 refilling at 300 tokens/minute.
+These are generous for normal traffic, yet sufficient to bound application-level
+work for a single identified client. The quota is held in-memory per application
+instance and is **not** globally coordinated across replicas; volumetric DDoS
+protection and globally consistent rate enforcement belong at the CDN / WAF /
+API-gateway layer, or require shared state if an application-level distributed
+quota is needed.
+
+### Testcontainers integration testing
+
+Integration tests run against disposable PostgreSQL 17 containers rather than H2 or a
+developer-managed database. This exercises the PostgreSQL-specific behavior relied upon
+by the implementation, including Flyway migrations, row locking, `clock_timestamp()`,
+`UNIQUE NULLS NOT DISTINCT`, idempotency conflict/reclamation behavior, database
+constraints, and concurrent financial mutations.
+
+The broader testing strategy and representative scenarios are described in
+[Testing](#testing).
+
 ## Testing
 
 Integration tests run against real PostgreSQL via Testcontainers with Flyway-applied
@@ -396,7 +414,7 @@ Highlights:
 - rate limiter: quota exhaustion, client isolation, policy isolation (API vs Health),
   zero DB writes on rejection, ProblemDetail + Retry-After + X-Request-Id contract
 
-## Design trade-offs
+## Design trade-offs and time-constrained choices
 
 Chosen pragmatically for the assignment scope:
 
@@ -411,11 +429,41 @@ Chosen pragmatically for the assignment scope:
   outcomes.
 - **Logical-result replay** instead of byte-for-byte response snapshots: replays return
   the original logical outcome/resource, which avoids storing serialized HTTP bodies.
+- **Application-level rate limiting**: the take-home uses an in-memory Bucket4j/Caffeine
+  limiter as a pragmatic, self-contained way to demonstrate client-overuse protection.
+  This deliberately means an application instance is not strictly stateless because
+  rate-limit buckets are local to that JVM. The state is non-authoritative and does not
+  affect financial correctness. In a production horizontally scaled deployment, rate
+  limiting would normally move to an ingress/reverse proxy/API gateway (or another
+  distributed enforcement layer), allowing the API instances themselves to remain
+  stateless with respect to request throttling. Where globally coordinated quotas are
+  required across multiple proxy replicas, the enforcement layer itself would need
+  shared or distributed state.
+
+## Library / tool adoption approach
+
+For less-familiar libraries or APIs, the implementation followed a small,
+evidence-driven adoption process: start from the official API/documentation, confirm
+Java/Spring compatibility, isolate the library behind a narrow application boundary,
+add focused tests for the behavior relied upon, then validate it through the full
+integration suite.
+
+Examples in this project include PostgreSQL Testcontainers for database-specific
+concurrency semantics, Bucket4j + Caffeine for bounded rate limiting, and Spring
+transactional events for best-effort after-commit auditing. Broader infrastructure
+such as Kafka, Redis, or an API gateway was deliberately not introduced unless the
+assignment required guarantees that justified the extra operational complexity.
 
 ## Scaling and production evolution
 
-The application is stateless outside PostgreSQL, so instances scale horizontally behind
-a load balancer. Not implemented, but clear next steps:
+Financial correctness is coordinated entirely through PostgreSQL, so application
+instances can scale horizontally without JVM-local coordination. Instances do hold
+non-authoritative local state for best-effort async audit execution and per-instance
+rate-limit buckets; neither affects financial correctness. For production scaling,
+rate limiting would move to the ingress/API-gateway layer (see trade-offs above),
+leaving the Spring Boot instances stateless with respect to request throttling.
+
+Not implemented, but clear next steps:
 
 - measured Hikari pool tuning against the PostgreSQL connection budget
 - finite row-lock/statement timeouts with retryable `503` mapping for hot cards
@@ -427,6 +475,17 @@ a load balancer. Not implemented, but clear next steps:
 - read replicas for read-heavy endpoints
 - distributed tracing/APM
 - secret and deployment management
+
+### Distributed / event-driven evolution
+
+The modular-monolith boundary is intentional: card, transaction, and idempotency
+operations currently benefit from one local database transaction. If scale or team
+ownership later justified service extraction, boundaries would be introduced around
+capabilities rather than splitting the current transaction arbitrarily. Authoritative
+financial writes would remain strongly coordinated, while non-critical downstream
+work such as audit, analytics, notifications, and reporting could move behind a
+transactional outbox and durable broker such as Kafka. This avoids dual-write failure
+modes while allowing independently scalable event consumers and read models.
 
 ## Assumptions
 
