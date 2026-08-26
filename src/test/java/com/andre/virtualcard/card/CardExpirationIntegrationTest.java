@@ -66,12 +66,22 @@ class CardExpirationIntegrationTest extends AbstractPostgreSQLIntegrationTest {
 
     /**
      * Marks the card already expired while respecting the DB invariant
-     * chk_card_expiry_after_creation (expires_at > created_at): one microsecond
-     * after creation is strictly later, yet long past relative to DB now.
+     * chk_card_expiry_after_creation (expires_at > created_at). Both timestamps
+     * are placed relative to PostgreSQL clock_timestamp() — not the JVM clock —
+     * so the fixture is deterministic regardless of JVM/database clock skew:
+     * created_at (2 s ago) &lt; expires_at (1 s ago) &lt; PostgreSQL now.
      */
     private void backdateExpiry(UUID cardId) {
-        jdbcTemplate.update(
-                "UPDATE card SET expires_at = created_at + interval '1 microsecond' WHERE id = ?",
+        jdbcTemplate.update("""
+                WITH db_time AS (
+                    SELECT clock_timestamp() AS now
+                )
+                UPDATE card
+                SET created_at = db_time.now - interval '2 seconds',
+                    expires_at = db_time.now - interval '1 second'
+                FROM db_time
+                WHERE id = ?
+                """,
                 cardId);
     }
 
