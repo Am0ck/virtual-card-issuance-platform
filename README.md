@@ -82,8 +82,9 @@ docker compose up -d postgres
 Flyway applies the schema automatically on startup; Hibernate only validates it.
 The app listens on port `8080` by default.
 
-If ports `8080` or `5432` are already in use, change the host-side port in
-`compose.yaml` (for example, `8081:8080` or `5433:5432`).
+If PostgreSQL's host port is changed in `compose.yaml`, update `DB_URL` accordingly
+when running the application on the host. The application's own port is configured
+through Spring Boot because the app is not running inside Compose in developer mode.
 
 ### Running the tests
 
