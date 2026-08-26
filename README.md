@@ -27,17 +27,50 @@ can operate against the same database.
 | Micrometer / Spring Boot Actuator | metrics & health |
 | Bucket4j | token-bucket rate limiting |
 | Caffeine | rate-limit bucket cache |
-| Docker Compose | local PostgreSQL |
+| Docker Compose | reproducible local application + PostgreSQL environment |
 
 No H2: integration tests run against real PostgreSQL through Testcontainers.
 
 ## Running locally
 
-Prerequisites: Java 17 and Docker (with Compose).
+Two independent ways to run the project are supported.
+
+### Quick start with Docker
+
+The only prerequisite is Docker with Compose. This builds the application image
+using Java 17, starts PostgreSQL 17, waits for PostgreSQL to become healthy, applies
+Flyway migrations, and starts the application:
+
+```bash
+docker compose up --build
+```
+
+The app is available at `http://localhost:8080` once the `app` container reports
+that it has started.
+
+- Health: `GET http://localhost:8080/actuator/health`
+- Metrics: `GET http://localhost:8080/actuator/metrics`
+
+To stop the application and PostgreSQL:
+
+```bash
+docker compose down
+```
+
+To also remove the local PostgreSQL data volume:
+
+```bash
+docker compose down -v
+```
+
+### Developer mode (local JVM)
+
+Prerequisites: Java 17 and Docker with Compose. Docker provides PostgreSQL only;
+the application runs on your host JVM.
 
 ```bash
 # start local PostgreSQL
-docker compose up -d
+docker compose up -d postgres
 
 # Windows
 .\mvnw.cmd spring-boot:run
@@ -49,11 +82,13 @@ docker compose up -d
 Flyway applies the schema automatically on startup; Hibernate only validates it.
 The app listens on port `8080` by default.
 
-- Health: `GET http://localhost:8080/actuator/health`
-- Metrics: `GET http://localhost:8080/actuator/metrics`
+If ports `8080` or `5432` are already in use, change the host-side port in
+`compose.yaml` (for example, `8081:8080` or `5433:5432`).
 
-Run the full test suite (spins up its own throwaway PostgreSQL container; no running
-Compose database required):
+### Running the tests
+
+The test suite spins up its own throwaway PostgreSQL containers through
+Testcontainers; no running Compose database is required:
 
 ```bash
 .\mvnw.cmd clean verify    # Windows
